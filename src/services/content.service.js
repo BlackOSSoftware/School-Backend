@@ -1,0 +1,285 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import mongoose from "mongoose";
+import ClassModel from "../models/Class.model.js";
+import Content from "../models/Content.model.js";
+import Student from "../models/Student.model.js";
+import Teacher from "../models/Teacher.model.js";
+
+function normalizeString(value = "") {
+  return String(value || "").trim();
+}
+
+function normalizeSubject(value = "") {
+  return normalizeString(value).toUpperCase();
+}
+
+function buildPagination(query = {}, defaults = { page: 1, limit: 10, maxLimit: 100 }) {
+  const page = Math.max(1, parseInt(query.page, 10) || defaults.page);
+  const limit = Math.max(
+    1,
+    Math.min(defaults.maxLimit, parseInt(query.limit, 10) || defaults.limit)
+  );
+  return { page, limit, skip: (page - 1) * limit };
+}
+
+function normalizeType(rawType = "") {
+  const type = normalizeString(rawType).toLowerCase();
+  if (!["homework", "notes"].includes(type)) {
+    throw new Error("Type must be homework or notes");
+  }
+  return type;
+}
+
+function normalizeOptionalType(rawType = "") {
+  const type = normalizeString(rawType).toLowerCase();
+  if (!type || type === "all") return null;
+  return normalizeType(type);
+}
+
+function resolveMimeType(file = {}) {
+  const incoming = normalizeString(file.mimetype).toLowerCase();
+  if (incoming && incoming !== "application/octet-stream") {
+    return incoming;
+  }
+
+  const ext = path.extname(file.originalname || "").toLowerCase();
+  const mimeByExt = {
+    ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".txt": "text/plain",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+  };
+
+  return mimeByExt[ext] || "application/octet-stream";
+}
+
+function toContentResponse(row) {
+  const hasFile = Boolean(row.file?.storagePath);
+
+  return {
+    id: row._id,
+    type: row.type,
+    title: row.title,
+    description: row.description,
+    subject: row.subject,
+    class: row.classId || null,
+    teacher: row.createdBy || null,
+    createdAt: row.createdAt,
+    file: hasFile
+      ? {
+          name: row.file.originalName || null,
+          size: row.file.size || null,
+          mimeType: row.file.mimeType || null,
+          url: `/${row.file.storagePath.replace(/\\/g, "/")}`,
+        }
+      : null,
+  };
+}
+
+async function deleteUploadedFile(file) {
+  if (!file?.path) return;
+  try {
+    await fs.unlink(file.path);
+  } catch {
+    // No-op: best effort cleanup for failed create
+  }
+}
+
+async function getTeacherAssignmentsByClass(teacherId, classId) {
+  const teacher = await Teacher.findById(teacherId).lean();
+  if (!teacher) throw new Error("Teacher not found");
+
+  const assignmentSubjects = (teacher.lectureAssignments || [])
+    .filter((assignment) => String(assignment.classId) === String(classId))
+    .map((assignment) => normalizeSubject(assignment.subject))
+    .filter(Boolean);
+
+  const uniqueSubjects = [...new Set(assignmentSubjects)];
+  if (uniqueSubjects.length > 0) {
+    return uniqueSubjects;
+  }
+
+  if (String(teacher.classTeacherOf || "") === String(classId)) {
+    return [...new Set((teacher.subjects || []).map((item) => normalizeSubject(item)).filter(Boolean))];
+  }
+
+  return [];
+}
+
+async function validateClassExists(classId) {
+  if (!mongoose.Types.ObjectId.isValid(classId)) {
+    throw new Error("Invalid class ID");
+  }
+
+  const exists = await ClassModel.exists({ _id: classId });
+  if (!exists) {
+    throw new Error("Class not found");
+  }
+}
+
+function resolveSubjectForCreate(inputSubject, allowedSubjects = []) {
+  const uniqueSubjects = [...new Set(allowedSubjects.map((item) => normalizeSubject(item)).filter(Boolean))];
+  if (uniqueSubjects.length === 0) {
+    throw new Error("You are not assigned to this class");
+  }
+
+  const providedSubject = normalizeSubject(inputSubject);
+
+  if (!providedSubject) {
+    if (uniqueSubjects.length === 1) {
+      return uniqueSubjects[0];
+    }
+    throw new Error("Subject is required for this class");
+  }
+
+  if (!uniqueSubjects.includes(providedSubject)) {
+    throw new Error("You are not assigned to this subject for selected class");
+  }
+
+  return providedSubject;
+}
+
+export async function createContentByTeacher(teacherId, payload = {}, file) {
+  const classId = normalizeString(payload.classId);
+  const title = normalizeString(payload.title);
+  const description = normalizeString(payload.description);
+
+  try {
+    if (!classId) throw new Error("Class ID is required");
+    if (!title) throw new Error("Title is required");
+    if (!description) throw new Error("Description is required");
+
+    const type = normalizeType(payload.type);
+
+    await validateClassExists(classId);
+    const assignedSubjects = await getTeacherAssignmentsByClass(teacherId, classId);
+    const subject = resolveSubjectForCreate(payload.subject, assignedSubjects);
+
+    const created = await Content.create({
+      type,
+      classId,
+      subject,
+      title,
+      description,
+      createdBy: teacherId,
+      file: file
+        ? {
+            originalName: file.originalname,
+            mimeType: resolveMimeType(file),
+            size: file.size,
+            storagePath: pathRelativeToUploads(file.path),
+          }
+        : undefined,
+    });
+
+    const hydrated = await Content.findById(created._id)
+      .populate("classId", "name section")
+      .populate("createdBy", "name email")
+      .lean();
+
+    return toContentResponse(hydrated);
+  } catch (error) {
+    await deleteUploadedFile(file);
+    throw error;
+  }
+}
+
+function pathRelativeToUploads(absolutePath = "") {
+  const normalizedAbsolute = normalizeString(absolutePath).replace(/\\/g, "/");
+  const marker = "/uploads/";
+  const markerIndex = normalizedAbsolute.lastIndexOf(marker);
+
+  if (markerIndex >= 0) {
+    return normalizedAbsolute.slice(markerIndex + 1);
+  }
+
+  return `uploads/content/${normalizeString(absolutePath).split(/[/\\]/).pop()}`;
+}
+
+function applyCommonFilters(filter, query = {}) {
+  const type = normalizeOptionalType(query.type);
+  if (type) filter.type = type;
+
+  const subject = normalizeSubject(query.subject);
+  if (subject && subject !== "ALL") filter.subject = subject;
+}
+
+export async function getTeacherContentList(teacherId, query = {}) {
+  const teacher = await Teacher.findById(teacherId).lean();
+  if (!teacher) throw new Error("Teacher not found");
+
+  const { page, limit, skip } = buildPagination(query);
+  const filter = { createdBy: teacherId };
+
+  const classId = normalizeString(query.classId);
+  if (classId) {
+    await validateClassExists(classId);
+    const assignedSubjects = await getTeacherAssignmentsByClass(teacherId, classId);
+    if (assignedSubjects.length === 0) {
+      throw new Error("You are not assigned to this class");
+    }
+    filter.classId = classId;
+  }
+
+  applyCommonFilters(filter, query);
+
+  const [rows, total] = await Promise.all([
+    Content.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate("classId", "name section")
+      .populate("createdBy", "name email")
+      .lean(),
+    Content.countDocuments(filter),
+  ]);
+
+  return {
+    data: rows.map(toContentResponse),
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+    hasNextPage: page < Math.ceil(total / limit),
+    hasPrevPage: page > 1,
+  };
+}
+
+export async function getStudentContentList(studentId, query = {}) {
+  const student = await Student.findById(studentId).select("classId").lean();
+  if (!student) throw new Error("Student not found");
+
+  const { page, limit, skip } = buildPagination(query);
+  const filter = { classId: student.classId };
+  applyCommonFilters(filter, query);
+
+  const [rows, total] = await Promise.all([
+    Content.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate("classId", "name section")
+      .populate("createdBy", "name email")
+      .lean(),
+    Content.countDocuments(filter),
+  ]);
+
+  return {
+    data: rows.map(toContentResponse),
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+    hasNextPage: page < Math.ceil(total / limit),
+    hasPrevPage: page > 1,
+  };
+}

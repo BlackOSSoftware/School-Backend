@@ -6,6 +6,8 @@ import { connectRedis, disconnectRedis } from "./config/redis.js";
 import { initFirebaseAdmin } from "./config/firebase.js";
 
 const PORT = Number(process.env.PORT || 4000);
+const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 0);
+const HEADERS_TIMEOUT_MS = Number(process.env.HEADERS_TIMEOUT_MS || 120000);
 
 async function start() {
   try {
@@ -15,8 +17,9 @@ async function start() {
     initFirebaseAdmin();
 
     const server = http.createServer(app);
+    server.requestTimeout = REQUEST_TIMEOUT_MS;
     server.keepAliveTimeout = 65000;
-    server.headersTimeout = 66000;
+    server.headersTimeout = HEADERS_TIMEOUT_MS;
 
     server.listen(PORT, () => {
       console.log(`Server running at http://localhost:${PORT}`);
