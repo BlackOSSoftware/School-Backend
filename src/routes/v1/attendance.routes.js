@@ -2,6 +2,8 @@ import { Router } from "express";
 import {
   getAdminAttendanceDateSummaryController,
   getAdminClassAttendanceByDateController,
+  getAdminDashboardSummaryController,
+  getAdminStudentAttendanceReportController,
   getMyClassAttendanceByDateController,
   getMyStudentAttendanceReportController,
   getStudentMyAttendanceReportController,
@@ -22,7 +24,13 @@ router.get(
 );
 
 router.get("/admin/date-summary", adminMiddleware, getAdminAttendanceDateSummaryController);
+router.get("/admin/dashboard-summary", adminMiddleware, getAdminDashboardSummaryController);
 router.get("/admin/class/:classId/date", adminMiddleware, getAdminClassAttendanceByDateController);
+router.get(
+  "/admin/class/:classId/student/:studentId/report",
+  adminMiddleware,
+  getAdminStudentAttendanceReportController
+);
 
 router.get("/student/me/report", studentMiddleware, getStudentMyAttendanceReportController);
 

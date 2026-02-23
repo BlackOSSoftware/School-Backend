@@ -1,6 +1,8 @@
 import {
   getAdminAttendanceDateSummary,
   getAdminClassAttendanceByDate,
+  getAdminDashboardSummary,
+  getAdminStudentAttendanceReport,
   getMyClassAttendanceByDate,
   getMyStudentAttendanceReport,
   getStudentMyAttendanceReport,
@@ -77,6 +79,22 @@ export async function getAdminAttendanceDateSummaryController(req, res) {
   }
 }
 
+export async function getAdminDashboardSummaryController(req, res) {
+  try {
+    const result = await getAdminDashboardSummary(req.query);
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Failed to fetch dashboard summary",
+    });
+  }
+}
+
 export async function getAdminClassAttendanceByDateController(req, res) {
   try {
     const result = await getAdminClassAttendanceByDate(req.params.classId, req.query);
@@ -89,6 +107,26 @@ export async function getAdminClassAttendanceByDateController(req, res) {
     return res.status(400).json({
       success: false,
       message: error.message || "Failed to fetch class attendance",
+    });
+  }
+}
+
+export async function getAdminStudentAttendanceReportController(req, res) {
+  try {
+    const result = await getAdminStudentAttendanceReport(
+      req.params.classId,
+      req.params.studentId,
+      req.query
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Failed to fetch student attendance report",
     });
   }
 }

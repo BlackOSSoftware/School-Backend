@@ -33,6 +33,22 @@ function getTodayUtcDateKey() {
   return toUtcDateKey(new Date());
 }
 
+function toLocalDateKey(dateValue = new Date()) {
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Invalid date");
+  }
+
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getTodayLocalDateKey() {
+  return toLocalDateKey(new Date());
+}
+
 function parseDateInputOrToday(rawDate) {
   const value = normalizeString(rawDate);
   return value || getTodayUtcDateKey();
@@ -209,15 +225,31 @@ function buildAttendanceRangeFilter(fromKey, toKey) {
   return { dateKey: { $lte: toKey } };
 }
 
+async function resolveReportDateRange(query = {}) {
+  const { fromKey, toKey } = parseDateRange(query);
+
+  if (fromKey || toKey) {
+    return { fromKey, toKey };
+  }
+
+  const todayKey = getTodayUtcDateKey();
+  const session = await getSessionByDateKeyOrThrow(todayKey);
+
+  return {
+    fromKey: toUtcDateKey(session.startDate),
+    toKey: toUtcDateKey(session.endDate),
+  };
+}
+
 export async function markMyClassAttendance(teacherId, classId, payload = {}) {
   await getTeacherClassAuthOrThrow(teacherId, classId);
   await getClassOrThrow(classId);
 
-  const dateKey = parseDateInputOrToday(payload.date);
-  const todayKey = getTodayUtcDateKey();
+  const dateKey = normalizeString(payload.date) || getTodayLocalDateKey();
+  const todayKey = getTodayLocalDateKey();
 
   if (dateKey !== todayKey) {
-    throw new Error("Attendance can only be marked/edited for today");
+    throw new Error(`Attendance can only be marked/edited for today (${todayKey})`);
   }
 
   const session = await getSessionByDateKeyOrThrow(dateKey);
@@ -288,12 +320,11 @@ export async function getMyStudentAttendanceReport(teacherId, classId, studentId
     throw new Error("Student does not belong to this class");
   }
 
-  const { fromKey, toKey } = parseDateRange(query);
+  const { fromKey, toKey } = await resolveReportDateRange(query);
   const dateFilter = buildAttendanceRangeFilter(fromKey, toKey);
 
   const attendanceDocs = await Attendance.find({
     classId,
-    sessionId: student.sessionId,
     ...dateFilter,
   })
     .select("dateKey records")
@@ -396,6 +427,49 @@ export async function getAdminAttendanceDateSummary(query = {}) {
   };
 }
 
+export async function getAdminDashboardSummary(query = {}) {
+  const requestedDate = normalizeString(query.date);
+  const todayKey = getTodayLocalDateKey();
+
+  if (requestedDate && requestedDate !== todayKey) {
+    throw new Error(`Dashboard summary is only available for today (${todayKey})`);
+  }
+
+  const dateKey = todayKey;
+  const session = await getSessionByDateKeyOrThrow(dateKey);
+
+  const [totalStudents, totalTeachers, totalClasses, attendanceDocs] = await Promise.all([
+    Student.countDocuments({ status: "active", sessionId: session._id }),
+    Teacher.countDocuments({ status: "active" }),
+    ClassModel.countDocuments({}),
+    Attendance.find({ sessionId: session._id, dateKey }).select("records").lean(),
+  ]);
+
+  const presentCount = attendanceDocs.reduce((sum, doc) => {
+    const presentInClass = (doc.records || []).filter((item) => item.status === "present").length;
+    return sum + presentInClass;
+  }, 0);
+
+  const absentCount = attendanceDocs.reduce((sum, doc) => {
+    const absentInClass = (doc.records || []).filter((item) => item.status === "absent").length;
+    return sum + absentInClass;
+  }, 0);
+
+  return {
+    totalStudents,
+    totalTeachers,
+    totalClasses,
+    todayAttendance: {
+      date: dateKey,
+      attendanceTaken: attendanceDocs.length > 0,
+      presentCount,
+      absentCount,
+      totalStudents,
+      presentPercentage: calculatePercentage(presentCount, totalStudents),
+    },
+  };
+}
+
 export async function getAdminClassAttendanceByDate(classId, query = {}) {
   const classRow = await getClassOrThrow(classId);
   const dateKey = parseDateInputOrToday(query.date);
@@ -409,6 +483,66 @@ export async function getAdminClassAttendanceByDate(classId, query = {}) {
   return buildClassAttendanceResponse(classRow, attendance, students);
 }
 
+export async function getAdminStudentAttendanceReport(classId, studentId, query = {}) {
+  await getClassOrThrow(classId);
+
+  if (!isValidObjectId(studentId)) {
+    throw new Error("Invalid student ID");
+  }
+
+  const student = await Student.findById(studentId)
+    .select("_id name scholarNumber classId sessionId status")
+    .lean();
+
+  if (!student) throw new Error("Student not found");
+  if (String(student.classId) !== String(classId)) {
+    throw new Error("Student does not belong to this class");
+  }
+
+  const { fromKey, toKey } = await resolveReportDateRange(query);
+  const dateFilter = buildAttendanceRangeFilter(fromKey, toKey);
+
+  const attendanceDocs = await Attendance.find({
+    classId,
+    ...dateFilter,
+  })
+    .select("dateKey records")
+    .sort({ dateKey: 1 })
+    .lean();
+
+  const daily = attendanceDocs.map((doc) => {
+    const studentRecord = (doc.records || []).find(
+      (item) => String(item.studentId) === String(student._id)
+    );
+
+    return {
+      date: doc.dateKey,
+      status: studentRecord?.status || "absent",
+    };
+  });
+
+  const totalDays = daily.length;
+  const presentDays = daily.filter((item) => item.status === "present").length;
+  const absentDays = totalDays - presentDays;
+
+  return {
+    student: {
+      id: student._id,
+      name: student.name,
+      scholarNumber: student.scholarNumber,
+      classId: student.classId,
+      sessionId: student.sessionId,
+    },
+    from: fromKey,
+    to: toKey,
+    totalDays,
+    presentDays,
+    absentDays,
+    presentPercentage: calculatePercentage(presentDays, totalDays),
+    daily,
+  };
+}
+
 export async function getStudentMyAttendanceReport(studentId, query = {}) {
   if (!isValidObjectId(studentId)) {
     throw new Error("Invalid student ID");
@@ -420,12 +554,11 @@ export async function getStudentMyAttendanceReport(studentId, query = {}) {
 
   if (!student) throw new Error("Student not found");
 
-  const { fromKey, toKey } = parseDateRange(query);
+  const { fromKey, toKey } = await resolveReportDateRange(query);
   const dateFilter = buildAttendanceRangeFilter(fromKey, toKey);
 
   const attendanceDocs = await Attendance.find({
     classId: student.classId,
-    sessionId: student.sessionId,
     ...dateFilter,
   })
     .select("dateKey records")
