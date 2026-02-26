@@ -5,6 +5,10 @@ import ClassModel from "../models/Class.model.js";
 import Content from "../models/Content.model.js";
 import Student from "../models/Student.model.js";
 import Teacher from "../models/Teacher.model.js";
+import Session from "../models/Session.model.js";
+
+const CONTENT_BACKFILL_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+let lastContentBackfillCheckAt = 0;
 
 function normalizeString(value = "") {
   return String(value || "").trim();
@@ -72,6 +76,7 @@ function toContentResponse(row) {
     description: row.description,
     subject: row.subject,
     class: row.classId || null,
+    session: row.sessionId || null,
     teacher: row.createdBy || null,
     createdAt: row.createdAt,
     file: hasFile
@@ -83,6 +88,48 @@ function toContentResponse(row) {
         }
       : null,
   };
+}
+
+async function resolveSessionId(sessionId) {
+  const providedSessionId = normalizeString(sessionId);
+
+  if (providedSessionId) {
+    if (!mongoose.Types.ObjectId.isValid(providedSessionId)) {
+      throw new Error("Invalid session ID");
+    }
+
+    const providedSession = await Session.findById(providedSessionId).lean();
+    if (!providedSession) throw new Error("Session not found");
+    return String(providedSession._id);
+  }
+
+  const activeSession = await Session.findOne({ isActive: true }).select("_id").lean();
+  if (!activeSession?._id) return null;
+  return String(activeSession._id);
+}
+
+async function backfillMissingContentSessions() {
+  if (Date.now() - lastContentBackfillCheckAt < CONTENT_BACKFILL_CHECK_INTERVAL_MS) {
+    return;
+  }
+  lastContentBackfillCheckAt = Date.now();
+
+  const activeSession = await Session.findOne({ isActive: true }).select("_id").lean();
+  if (!activeSession?._id) return;
+
+  const missingExists = await Content.exists({
+    $or: [{ sessionId: { $exists: false } }, { sessionId: null }],
+  });
+  if (!missingExists) return;
+
+  await Content.updateMany(
+    {
+      $or: [{ sessionId: { $exists: false } }, { sessionId: null }],
+    },
+    {
+      $set: { sessionId: activeSession._id },
+    }
+  );
 }
 
 async function deleteUploadedFile(file) {
@@ -160,13 +207,17 @@ export async function createContentByTeacher(teacherId, payload = {}, file) {
 
     const type = normalizeType(payload.type);
 
-    await validateClassExists(classId);
-    const assignedSubjects = await getTeacherAssignmentsByClass(teacherId, classId);
+    const [sessionId, assignedSubjects] = await Promise.all([
+      resolveSessionId(payload.sessionId),
+      getTeacherAssignmentsByClass(teacherId, classId),
+      validateClassExists(classId),
+    ]);
     const subject = resolveSubjectForCreate(payload.subject, assignedSubjects);
 
     const created = await Content.create({
       type,
       classId,
+      sessionId,
       subject,
       title,
       description,
@@ -183,6 +234,7 @@ export async function createContentByTeacher(teacherId, payload = {}, file) {
 
     const hydrated = await Content.findById(created._id)
       .populate("classId", "name section")
+      .populate("sessionId", "name startDate endDate isActive")
       .populate("createdBy", "name email")
       .lean();
 
@@ -214,11 +266,17 @@ function applyCommonFilters(filter, query = {}) {
 }
 
 export async function getTeacherContentList(teacherId, query = {}) {
+  await backfillMissingContentSessions();
+
   const teacher = await Teacher.findById(teacherId).lean();
   if (!teacher) throw new Error("Teacher not found");
 
   const { page, limit, skip } = buildPagination(query);
   const filter = { createdBy: teacherId };
+  const sessionId = await resolveSessionId(query.sessionId);
+  if (sessionId) {
+    filter.sessionId = sessionId;
+  }
 
   const classId = normalizeString(query.classId);
   if (classId) {
@@ -238,6 +296,7 @@ export async function getTeacherContentList(teacherId, query = {}) {
       .skip(skip)
       .limit(limit)
       .populate("classId", "name section")
+      .populate("sessionId", "name startDate endDate isActive")
       .populate("createdBy", "name email")
       .lean(),
     Content.countDocuments(filter),
@@ -255,11 +314,16 @@ export async function getTeacherContentList(teacherId, query = {}) {
 }
 
 export async function getStudentContentList(studentId, query = {}) {
-  const student = await Student.findById(studentId).select("classId").lean();
+  await backfillMissingContentSessions();
+
+  const student = await Student.findById(studentId).select("classId sessionId").lean();
   if (!student) throw new Error("Student not found");
 
   const { page, limit, skip } = buildPagination(query);
   const filter = { classId: student.classId };
+  if (student.sessionId) {
+    filter.sessionId = student.sessionId;
+  }
   applyCommonFilters(filter, query);
 
   const [rows, total] = await Promise.all([
@@ -268,6 +332,7 @@ export async function getStudentContentList(studentId, query = {}) {
       .skip(skip)
       .limit(limit)
       .populate("classId", "name section")
+      .populate("sessionId", "name startDate endDate isActive")
       .populate("createdBy", "name email")
       .lean(),
     Content.countDocuments(filter),

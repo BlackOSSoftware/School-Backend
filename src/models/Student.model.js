@@ -34,6 +34,11 @@ const studentSchema = new mongoose.Schema(
       ref: "Session",
       required: true,
     },
+    busId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Bus",
+      default: null,
+    },
     password: {
       type: String,
       required: true,
@@ -50,6 +55,14 @@ const studentSchema = new mongoose.Schema(
       enum: ["active", "inactive"],
       default: "active",
     },
+    isTransferred: {
+      type: Boolean,
+      default: false,
+    },
+    transferredAt: {
+      type: Date,
+      default: null,
+    },
     fcmToken: {
       type: String,
       trim: true,
@@ -62,6 +75,8 @@ const studentSchema = new mongoose.Schema(
 studentSchema.index({ classId: 1, status: 1 });
 studentSchema.index({ classId: 1, name: 1 });
 studentSchema.index({ sessionId: 1, classId: 1 });
+studentSchema.index({ busId: 1 });
+studentSchema.index({ isTransferred: 1, status: 1 });
 
 studentSchema.pre("save", async function saveHook() {
   if (!this.isModified("password")) return;

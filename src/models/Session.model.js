@@ -27,4 +27,13 @@ const sessionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Enforce: only one active session can exist at any time.
+sessionSchema.index(
+  { isActive: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { isActive: true },
+  }
+);
+
 export default mongoose.model("Session", sessionSchema);

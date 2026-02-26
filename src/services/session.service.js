@@ -20,12 +20,20 @@ export async function createSession(payload) {
     await Session.updateMany({ isActive: true }, { isActive: false });
   }
 
-  const session = await Session.create({
-    name,
-    startDate,
-    endDate,
-    isActive: !!isActive,
-  });
+  let session;
+  try {
+    session = await Session.create({
+      name,
+      startDate,
+      endDate,
+      isActive: !!isActive,
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      throw new Error("Only one session can be active at a time");
+    }
+    throw error;
+  }
 
   await invalidateSessionCache();
   return session;
@@ -103,10 +111,18 @@ export async function updateSession(id, payload) {
     );
   }
 
-  const updated = await Session.findByIdAndUpdate(id, payload, {
-    new: true,
-    runValidators: true,
-  });
+  let updated;
+  try {
+    updated = await Session.findByIdAndUpdate(id, payload, {
+      new: true,
+      runValidators: true,
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      throw new Error("Only one session can be active at a time");
+    }
+    throw error;
+  }
 
   await invalidateSessionCache();
   return updated;

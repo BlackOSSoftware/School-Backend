@@ -1,4 +1,6 @@
 import {
+  createStudentsBulk,
+  bulkPromoteStudents,
   createStudent,
   deleteStudent,
   getAllStudents,
@@ -23,6 +25,25 @@ export async function createStudentController(req, res) {
     return res.status(400).json({
       success: false,
       message: error.message || "Student creation failed",
+    });
+  }
+}
+
+export async function createStudentsBulkController(req, res) {
+  try {
+    const created = await createStudentsBulk(req.body);
+
+    return res.status(201).json({
+      success: true,
+      message: "Students created successfully",
+      data: created.students,
+      passwords: created.passwords,
+      totalCreated: created.totalCreated,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Bulk student creation failed",
     });
   }
 }
@@ -120,6 +141,23 @@ export async function getMyStudentProfileController(req, res) {
     return res.status(400).json({
       success: false,
       message: error.message || "Failed to fetch student profile",
+    });
+  }
+}
+
+export async function bulkPromoteStudentsController(req, res) {
+  try {
+    const result = await bulkPromoteStudents(req.body);
+
+    return res.status(200).json({
+      success: true,
+      message: "Student session transition completed successfully",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Student session transition failed",
     });
   }
 }

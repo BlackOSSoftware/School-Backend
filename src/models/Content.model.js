@@ -12,6 +12,10 @@ const contentSchema = new mongoose.Schema(
       ref: "Class",
       required: true,
     },
+    sessionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Session",
+    },
     subject: {
       type: String,
       required: true,
@@ -55,6 +59,7 @@ const contentSchema = new mongoose.Schema(
 );
 
 contentSchema.index({ classId: 1, type: 1, subject: 1, createdAt: -1 });
+contentSchema.index({ sessionId: 1, classId: 1, type: 1, subject: 1, createdAt: -1 });
 contentSchema.index({ createdBy: 1, type: 1, createdAt: -1 });
 
 export default mongoose.model("Content", contentSchema);

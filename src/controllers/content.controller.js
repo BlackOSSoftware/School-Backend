@@ -18,6 +18,14 @@ function toAbsoluteUrl(req, rawPath = "") {
   return `${req.protocol}://${req.get("host")}${normalizedPath}`;
 }
 
+function buildTeacherDownloadUrl(req, contentId) {
+  return toAbsoluteUrl(req, `/api/v1/teacher/me/content/download/${contentId}?mode=download`);
+}
+
+function buildStudentDownloadUrl(req, contentId) {
+  return toAbsoluteUrl(req, `/api/v1/student/me/content/download/${contentId}?mode=download`);
+}
+
 export async function createTeacherContentController(req, res) {
   try {
     const payload = { ...req.body, type: pickTypeFromRequest(req) };
@@ -51,7 +59,7 @@ export async function getTeacherContentController(req, res) {
           ...item.file,
           url: toAbsoluteUrl(req, item.file.url),
           openUrl: toAbsoluteUrl(req, item.file.url),
-          downloadUrl: toAbsoluteUrl(req, `/api/v1/teacher/me/content/download/${item.id}`),
+          downloadUrl: buildTeacherDownloadUrl(req, item.id),
         },
       };
     });
@@ -81,7 +89,7 @@ export async function getStudentContentController(req, res) {
           ...item.file,
           url: toAbsoluteUrl(req, item.file.url),
           openUrl: toAbsoluteUrl(req, item.file.url),
-          downloadUrl: toAbsoluteUrl(req, `/api/v1/student/me/content/download/${item.id}`),
+          downloadUrl: buildStudentDownloadUrl(req, item.id),
         },
       };
     });
@@ -121,15 +129,14 @@ export async function downloadContentController(req, res) {
     const originalName = content.file.originalName || "document";
     const encodedName = encodeURIComponent(originalName);
     const mode = String(req.query.mode || "").toLowerCase();
-    const inlineTypes = ["application/pdf", "image/jpeg", "image/png", "image/webp", "text/plain"];
-    const dispositionType =
-      mode === "open" || inlineTypes.includes(mimeType) ? "inline" : "attachment";
+    const dispositionType = mode === "open" ? "inline" : "attachment";
 
     res.setHeader(
       "Content-Disposition",
       `${dispositionType}; filename="${originalName.replace(/"/g, "")}"; filename*=UTF-8''${encodedName}`
     );
     res.setHeader("Content-Type", mimeType);
+    res.setHeader("X-Content-Type-Options", "nosniff");
     return res.sendFile(filePath);
   } catch (error) {
     return res.status(500).json({

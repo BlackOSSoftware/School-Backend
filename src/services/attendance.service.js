@@ -132,6 +132,30 @@ async function getSessionByDateKeyOrThrow(dateKey) {
   return session;
 }
 
+async function getActiveSession() {
+  return Session.findOne({ isActive: true }).lean();
+}
+
+async function resolveSummarySessionOrThrow(query = {}, dateKey) {
+  const requestedSessionId = normalizeString(query.sessionId);
+
+  if (requestedSessionId) {
+    if (!isValidObjectId(requestedSessionId)) {
+      throw new Error("Invalid session ID");
+    }
+    const row = await Session.findById(requestedSessionId).lean();
+    if (!row) throw new Error("Session not found");
+    return row;
+  }
+
+  const activeSession = await getActiveSession();
+  if (activeSession?._id) {
+    return activeSession;
+  }
+
+  return getSessionByDateKeyOrThrow(dateKey);
+}
+
 async function getStudentsByClassSession(classId, sessionId) {
   return Student.find({
     classId,
@@ -366,7 +390,7 @@ export async function getMyStudentAttendanceReport(teacherId, classId, studentId
 
 export async function getAdminAttendanceDateSummary(query = {}) {
   const dateKey = parseDateInputOrToday(query.date);
-  const session = await getSessionByDateKeyOrThrow(dateKey);
+  const session = await resolveSummarySessionOrThrow(query, dateKey);
 
   const [classes, attendanceDocs, studentCounts] = await Promise.all([
     ClassModel.find({}).select("_id name section").sort({ name: 1, section: 1 }).lean(),
@@ -436,7 +460,7 @@ export async function getAdminDashboardSummary(query = {}) {
   }
 
   const dateKey = todayKey;
-  const session = await getSessionByDateKeyOrThrow(dateKey);
+  const session = await resolveSummarySessionOrThrow(query, dateKey);
 
   const [totalStudents, totalTeachers, totalClasses, attendanceDocs] = await Promise.all([
     Student.countDocuments({ status: "active", sessionId: session._id }),

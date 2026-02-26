@@ -397,6 +397,7 @@ export async function getTeacherStudentsByAssignedClasses(teacherId, query = {})
   if (cached) return JSON.parse(cached);
 
   const filter = {
+    status: "active",
     classId: { $in: classFilter },
   };
 
