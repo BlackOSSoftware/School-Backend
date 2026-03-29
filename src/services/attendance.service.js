@@ -51,7 +51,11 @@ function getTodayLocalDateKey() {
 
 function parseDateInputOrToday(rawDate) {
   const value = normalizeString(rawDate);
-  return value || getTodayUtcDateKey();
+  const dateKey = value || getTodayLocalDateKey();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    throw new Error("date must be in YYYY-MM-DD format");
+  }
+  return dateKey;
 }
 
 function parseDateRange(query = {}) {
@@ -108,6 +112,14 @@ async function getTeacherClassAuthOrThrow(teacherId, classId) {
 }
 
 async function getSessionByDateKeyOrThrow(dateKey) {
+  const session = await getSessionByDateKey(dateKey);
+  if (!session) {
+    throw new Error("No academic session found for selected date");
+  }
+  return session;
+}
+
+async function getSessionByDateKey(dateKey) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
     throw new Error("date must be in YYYY-MM-DD format");
   }
@@ -118,22 +130,38 @@ async function getSessionByDateKeyOrThrow(dateKey) {
   const dayEnd = new Date(date);
   dayEnd.setUTCHours(23, 59, 59, 999);
 
-  const session = await Session.findOne({
+  return Session.findOne({
     startDate: { $lte: dayEnd },
     endDate: { $gte: dayStart },
   })
     .sort({ startDate: -1 })
     .lean();
-
-  if (!session) {
-    throw new Error("No academic session found for selected date");
-  }
-
-  return session;
 }
 
 async function getActiveSession() {
   return Session.findOne({ isActive: true }).lean();
+}
+
+async function resolveSessionForClassAttendance(dateKey) {
+  const todayKey = getTodayLocalDateKey();
+  const [activeSession, sessionByDate] = await Promise.all([
+    getActiveSession(),
+    getSessionByDateKey(dateKey),
+  ]);
+
+  if (dateKey === todayKey && activeSession?._id) {
+    return activeSession;
+  }
+
+  if (sessionByDate?._id) {
+    return sessionByDate;
+  }
+
+  if (activeSession?._id) {
+    return activeSession;
+  }
+
+  throw new Error("No academic session found for selected date");
 }
 
 async function resolveSummarySessionOrThrow(query = {}, dateKey) {
@@ -269,14 +297,14 @@ export async function markMyClassAttendance(teacherId, classId, payload = {}) {
   await getTeacherClassAuthOrThrow(teacherId, classId);
   await getClassOrThrow(classId);
 
-  const dateKey = normalizeString(payload.date) || getTodayLocalDateKey();
+  const dateKey = parseDateInputOrToday(payload.date);
   const todayKey = getTodayLocalDateKey();
 
   if (dateKey !== todayKey) {
     throw new Error(`Attendance can only be marked/edited for today (${todayKey})`);
   }
 
-  const session = await getSessionByDateKeyOrThrow(dateKey);
+  const session = await resolveSessionForClassAttendance(dateKey);
   const students = await getStudentsByClassSession(classId, session._id);
 
   if (students.length === 0) {
@@ -317,7 +345,7 @@ export async function getMyClassAttendanceByDate(teacherId, classId, query = {})
   const classRow = await getClassOrThrow(classId);
 
   const dateKey = parseDateInputOrToday(query.date);
-  const session = await getSessionByDateKeyOrThrow(dateKey);
+  const session = await resolveSessionForClassAttendance(dateKey);
 
   const [attendance, students] = await Promise.all([
     Attendance.findOne({ classId, sessionId: session._id, dateKey }).lean(),

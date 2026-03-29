@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Teacher from "../models/Teacher.model.js";
 import ClassModel from "../models/Class.model.js";
 import Student from "../models/Student.model.js";
+import Session from "../models/Session.model.js";
 import { deleteCacheByPattern, getCache, setCache } from "../config/redis.js";
 import { generateAccessToken } from "../utils/jwt-utils.js";
 
@@ -286,9 +287,6 @@ export async function getTeacherClassesAndStudents(teacherId, query = {}) {
   }
 
   const { page, limit, skip } = buildPagination(query);
-  const cacheKey = `teachers:me:classes:teacher=${teacherId}:page=${page}:limit=${limit}`;
-  const cached = await getCache(cacheKey);
-  if (cached) return JSON.parse(cached);
 
   const teacher = await Teacher.findById(teacherId)
     .populate("classTeacherOf", "name section")
@@ -309,8 +307,25 @@ export async function getTeacherClassesAndStudents(teacherId, query = {}) {
   }
 
   const assignedClassIds = [...classMap.keys()];
+  const requestedSessionId = String(query.sessionId || "").trim();
+  if (requestedSessionId && !mongoose.Types.ObjectId.isValid(requestedSessionId)) {
+    throw new Error("Invalid session ID");
+  }
+  const activeSession = requestedSessionId
+    ? null
+    : await Session.findOne({ isActive: true }).select("_id").lean();
+  const resolvedSessionId = requestedSessionId || String(activeSession?._id || "");
+
+  const cacheKey = `teachers:me:classes:teacher=${teacherId}:session=${resolvedSessionId || "none"}:page=${page}:limit=${limit}`;
+  const cached = await getCache(cacheKey);
+  if (cached) return JSON.parse(cached);
+
   const filter = assignedClassIds.length
-    ? { status: "active", classId: { $in: assignedClassIds } }
+    ? {
+        status: "active",
+        classId: { $in: assignedClassIds },
+        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {}),
+      }
     : null;
 
   const [students, totalStudents] = filter
@@ -375,6 +390,14 @@ export async function getTeacherStudentsByAssignedClasses(teacherId, query = {})
   }
 
   const search = String(query.search || "").trim();
+  const requestedSessionId = String(query.sessionId || "").trim();
+  if (requestedSessionId && !mongoose.Types.ObjectId.isValid(requestedSessionId)) {
+    throw new Error("Invalid session ID");
+  }
+  const activeSession = requestedSessionId
+    ? null
+    : await Session.findOne({ isActive: true }).select("_id").lean();
+  const resolvedSessionId = requestedSessionId || String(activeSession?._id || "");
 
   const classFilter = selectedClassId
     ? [selectedClassId]
@@ -392,13 +415,14 @@ export async function getTeacherStudentsByAssignedClasses(teacherId, query = {})
     };
   }
 
-  const cacheKey = `teachers:me:students:teacher=${teacherId}:class=${selectedClassId || "all"}:page=${page}:limit=${limit}:search=${search}`;
+  const cacheKey = `teachers:me:students:teacher=${teacherId}:class=${selectedClassId || "all"}:session=${resolvedSessionId || "none"}:page=${page}:limit=${limit}:search=${search}`;
   const cached = await getCache(cacheKey);
   if (cached) return JSON.parse(cached);
 
   const filter = {
     status: "active",
     classId: { $in: classFilter },
+    ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {}),
   };
 
   if (search) {
