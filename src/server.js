@@ -11,12 +11,21 @@ const HEADERS_TIMEOUT_MS = Number(process.env.HEADERS_TIMEOUT_MS || 120000);
 
 async function start() {
   try {
+    console.log("Starting backend bootstrap...");
     await connectDB();
 
     await connectRedis();
     initFirebaseAdmin();
 
     const server = http.createServer(app);
+    server.on("error", (error) => {
+      if (error?.code === "EADDRINUSE") {
+        console.error(`Port ${PORT} is already in use. Stop existing process or change PORT in .env`);
+        process.exit(1);
+      }
+      console.error("HTTP server error:", error);
+      process.exit(1);
+    });
     server.requestTimeout = REQUEST_TIMEOUT_MS;
     server.keepAliveTimeout = 65000;
     server.headersTimeout = HEADERS_TIMEOUT_MS;

@@ -525,12 +525,29 @@ export async function getAdminDashboardSummary(query = {}) {
 export async function getAdminClassAttendanceByDate(classId, query = {}) {
   const classRow = await getClassOrThrow(classId);
   const dateKey = parseDateInputOrToday(query.date);
-  const session = await getSessionByDateKeyOrThrow(dateKey);
+  // Keep admin class detail aligned with admin date-summary session selection.
+  // Otherwise summary can show counts while detail resolves another session and returns 0/0/0.
+  const session = await resolveSummarySessionOrThrow(query, dateKey);
 
-  const [attendance, students] = await Promise.all([
+  let [attendance, students] = await Promise.all([
     Attendance.findOne({ classId, sessionId: session._id, dateKey }).lean(),
     getStudentsByClassSession(classId, session._id),
   ]);
+
+  // Safety fallback:
+  // In some environments class summary can reflect attendance from a different
+  // resolved session for the same date. If that happens, return the most recent
+  // attendance for this class/date so admin modal still shows actual student list.
+  if (!attendance) {
+    const fallbackAttendance = await Attendance.findOne({ classId, dateKey })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .lean();
+
+    if (fallbackAttendance) {
+      attendance = fallbackAttendance;
+      students = await getStudentsByClassSession(classId, fallbackAttendance.sessionId);
+    }
+  }
 
   return buildClassAttendanceResponse(classRow, attendance, students);
 }
@@ -551,11 +568,21 @@ export async function getAdminStudentAttendanceReport(classId, studentId, query 
     throw new Error("Student does not belong to this class");
   }
 
+  const requestedSessionId = normalizeString(query.sessionId);
+  let sessionFilter = {};
+  if (requestedSessionId) {
+    if (!isValidObjectId(requestedSessionId)) {
+      throw new Error("Invalid session ID");
+    }
+    sessionFilter = { sessionId: new mongoose.Types.ObjectId(requestedSessionId) };
+  }
+
   const { fromKey, toKey } = await resolveReportDateRange(query);
   const dateFilter = buildAttendanceRangeFilter(fromKey, toKey);
 
   const attendanceDocs = await Attendance.find({
     classId,
+    ...sessionFilter,
     ...dateFilter,
   })
     .select("dateKey records")
