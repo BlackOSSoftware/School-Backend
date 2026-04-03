@@ -6,6 +6,7 @@ import {
   getMyClassAttendanceByDate,
   getMyStudentAttendanceReport,
   getStudentMyAttendanceReport,
+  updateAdminStudentAttendanceByDate,
   markMyClassAttendance,
 } from "../services/attendance.service.js";
 
@@ -127,6 +128,28 @@ export async function getAdminStudentAttendanceReportController(req, res) {
     return res.status(400).json({
       success: false,
       message: error.message || "Failed to fetch student attendance report",
+    });
+  }
+}
+
+export async function updateAdminStudentAttendanceByDateController(req, res) {
+  try {
+    const result = await updateAdminStudentAttendanceByDate(
+      req.user?._id,
+      req.params.classId,
+      req.params.studentId,
+      req.body
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Attendance updated successfully",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Failed to update attendance",
     });
   }
 }

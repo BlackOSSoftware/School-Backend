@@ -4,6 +4,8 @@ import Teacher from "../models/Teacher.model.js";
 import Student from "../models/Student.model.js";
 import ClassModel from "../models/Class.model.js";
 import Session from "../models/Session.model.js";
+import User from "../models/User.model.js";
+import { sendPushNotificationToTokens } from "./notification.service.js";
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -100,7 +102,7 @@ async function getTeacherClassAuthOrThrow(teacherId, classId) {
     throw new Error("Invalid teacher ID");
   }
 
-  const teacher = await Teacher.findById(teacherId).select("_id classTeacherOf status").lean();
+  const teacher = await Teacher.findById(teacherId).select("_id name classTeacherOf status").lean();
   if (!teacher) throw new Error("Teacher not found");
   if (teacher.status !== "active") throw new Error("Account inactive");
 
@@ -190,7 +192,7 @@ async function getStudentsByClassSession(classId, sessionId) {
     sessionId,
     status: "active",
   })
-    .select("_id name scholarNumber classId sessionId")
+    .select("_id name scholarNumber classId sessionId fcmToken")
     .sort({ name: 1 })
     .lean();
 }
@@ -199,6 +201,13 @@ function buildClassAttendanceResponse(classRow, attendanceDoc, students) {
   const records = attendanceDoc?.records || [];
   const presentStudents = records.filter((item) => item.status === "present");
   const absentStudents = records.filter((item) => item.status === "absent");
+  const statusByStudentId = new Map(records.map((item) => [String(item.studentId), item.status]));
+  const allStudents = students.map((student) => ({
+    studentId: student._id,
+    studentName: student.name,
+    scholarNumber: student.scholarNumber,
+    status: statusByStudentId.get(String(student._id)) || "not_marked",
+  }));
 
   const totalStudents = students.length || records.length;
   const presentCount = presentStudents.length;
@@ -218,6 +227,7 @@ function buildClassAttendanceResponse(classRow, attendanceDoc, students) {
     presentPercentage: calculatePercentage(presentCount, totalStudents),
     presentStudents,
     absentStudents,
+    allStudents,
   };
 }
 
@@ -277,6 +287,61 @@ function buildAttendanceRangeFilter(fromKey, toKey) {
   return { dateKey: { $lte: toKey } };
 }
 
+async function dispatchAttendanceNotifications({ classRow, dateKey, records, students }) {
+  const tokenEntries = records
+    .map((record) => {
+      const student = students.find((item) => String(item._id) === String(record.studentId));
+      const token = normalizeString(student?.fcmToken);
+      if (!token) return null;
+      return {
+        token,
+        status: record.status,
+      };
+    })
+    .filter(Boolean);
+
+  if (!tokenEntries.length) {
+    return;
+  }
+
+  const presentTokens = [...new Set(tokenEntries.filter((item) => item.status === "present").map((item) => item.token))];
+  const absentTokens = [...new Set(tokenEntries.filter((item) => item.status === "absent").map((item) => item.token))];
+
+  const commonData = {
+    type: "attendance_marked",
+    classId: String(classRow?._id || ""),
+    className: String(classRow?.name || ""),
+    classSection: String(classRow?.section || ""),
+    date: String(dateKey || ""),
+  };
+
+  const [presentDelivery, absentDelivery] = await Promise.all([
+    presentTokens.length
+      ? sendPushNotificationToTokens(presentTokens, {
+        title: "Attendance Marked",
+        body: `Marked Present for ${classRow?.name || "class"} ${classRow?.section || ""} on ${dateKey}.`,
+        data: { ...commonData, attendanceStatus: "present" },
+      })
+      : Promise.resolve(null),
+    absentTokens.length
+      ? sendPushNotificationToTokens(absentTokens, {
+        title: "Attendance Marked",
+        body: `Marked Absent for ${classRow?.name || "class"} ${classRow?.section || ""} on ${dateKey}.`,
+        data: { ...commonData, attendanceStatus: "absent" },
+      })
+      : Promise.resolve(null),
+  ]);
+
+  const invalidTokens = [
+    ...(Array.isArray(presentDelivery?.invalidTokens) ? presentDelivery.invalidTokens : []),
+    ...(Array.isArray(absentDelivery?.invalidTokens) ? absentDelivery.invalidTokens : []),
+  ];
+
+  if (invalidTokens.length > 0) {
+    await Student.updateMany({ fcmToken: { $in: invalidTokens } }, { $set: { fcmToken: null } });
+  }
+}
+
 async function resolveReportDateRange(query = {}) {
   const { fromKey, toKey } = parseDateRange(query);
 
@@ -294,8 +359,8 @@ async function resolveReportDateRange(query = {}) {
 }
 
 export async function markMyClassAttendance(teacherId, classId, payload = {}) {
-  await getTeacherClassAuthOrThrow(teacherId, classId);
-  await getClassOrThrow(classId);
+  const teacher = await getTeacherClassAuthOrThrow(teacherId, classId);
+  const classRow = await getClassOrThrow(classId);
 
   const dateKey = parseDateInputOrToday(payload.date);
   const todayKey = getTodayLocalDateKey();
@@ -326,6 +391,9 @@ export async function markMyClassAttendance(teacherId, classId, payload = {}) {
         date: dateKeyToUtcDate(dateKey),
         dateKey,
         markedBy: teacherId,
+        markedByModel: "Teacher",
+        markedByRole: "teacher",
+        markedByName: teacher?.name || "",
         records,
       },
     },
@@ -336,7 +404,8 @@ export async function markMyClassAttendance(teacherId, classId, payload = {}) {
     }
   ).lean();
 
-  const classRow = await getClassOrThrow(classId);
+  await dispatchAttendanceNotifications({ classRow, dateKey, records, students });
+
   return buildClassAttendanceResponse(classRow, attendance, students);
 }
 
@@ -549,6 +618,83 @@ export async function getAdminClassAttendanceByDate(classId, query = {}) {
     }
   }
 
+  return buildClassAttendanceResponse(classRow, attendance, students);
+}
+
+export async function updateAdminStudentAttendanceByDate(adminId, classId, studentId, payload = {}) {
+  await getClassOrThrow(classId);
+
+  if (!isValidObjectId(studentId)) {
+    throw new Error("Invalid student ID");
+  }
+
+  const dateKey = parseDateInputOrToday(payload.date);
+  const requestedStatus = normalizeString(payload.status).toLowerCase();
+  if (!["present", "absent"].includes(requestedStatus)) {
+    throw new Error("status must be present or absent");
+  }
+
+  const session = await resolveSessionForClassAttendance(dateKey);
+  const students = await getStudentsByClassSession(classId, session._id);
+  if (!students.length) {
+    throw new Error("No active students found in this class for selected session");
+  }
+
+  const targetStudent = students.find((item) => String(item._id) === String(studentId));
+  if (!targetStudent) {
+    throw new Error("Student does not belong to this class for selected session");
+  }
+
+  const admin = await User.findById(adminId).select("_id name").lean();
+  if (!admin) {
+    throw new Error("Admin not found");
+  }
+
+  const existing = await Attendance.findOne({
+    classId,
+    sessionId: session._id,
+    dateKey,
+  }).lean();
+
+  const statusMap = new Map(
+    (existing?.records || []).map((item) => [String(item.studentId), item.status])
+  );
+  statusMap.set(String(targetStudent._id), requestedStatus);
+
+  const records = students.map((student) => ({
+    studentId: student._id,
+    studentName: student.name,
+    scholarNumber: student.scholarNumber,
+    status: statusMap.get(String(student._id)) || "absent",
+  }));
+
+  const attendance = await Attendance.findOneAndUpdate(
+    {
+      classId,
+      sessionId: session._id,
+      dateKey,
+    },
+    {
+      $set: {
+        classId,
+        sessionId: session._id,
+        date: dateKeyToUtcDate(dateKey),
+        dateKey,
+        markedBy: admin._id,
+        markedByModel: "User",
+        markedByRole: "admin",
+        markedByName: admin.name || "Admin",
+        records,
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true,
+    }
+  ).lean();
+
+  const classRow = await getClassOrThrow(classId);
   return buildClassAttendanceResponse(classRow, attendance, students);
 }
 

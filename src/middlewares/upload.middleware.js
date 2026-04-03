@@ -4,6 +4,8 @@ import multer from "multer";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_FILE_SIZE_MB = MAX_FILE_SIZE / (1024 * 1024);
+const MAX_VIDEO_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_VIDEO_FILE_SIZE_MB = MAX_VIDEO_FILE_SIZE / (1024 * 1024);
 const UPLOAD_REQUEST_TIMEOUT_MS = Number(process.env.UPLOAD_REQUEST_TIMEOUT_MS || 0);
 const ALLOWED_FILE_FIELDS = ["file", "document", "attachment", "upload"];
 
@@ -37,9 +39,13 @@ const ALLOWED_EXTENSIONS = new Set([
 ]);
 
 const uploadRoot = path.resolve(process.cwd(), "uploads", "content");
+const videoUploadRoot = path.resolve(process.cwd(), "uploads", "videos");
 
 if (!fs.existsSync(uploadRoot)) {
   fs.mkdirSync(uploadRoot, { recursive: true });
+}
+if (!fs.existsSync(videoUploadRoot)) {
+  fs.mkdirSync(videoUploadRoot, { recursive: true });
 }
 
 function sanitizeBaseName(filename = "") {
@@ -85,6 +91,37 @@ const upload = multer({
           "Unsupported file type. Allowed: PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, TXT, JPG, PNG, WEBP"
         )
       );
+    }
+
+    return cb(null, true);
+  },
+});
+
+const videoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, videoUploadRoot),
+    filename: (_req, file, cb) => {
+      const extension = path.extname(file.originalname || "").toLowerCase();
+      const safeBase = sanitizeBaseName(file.originalname || "");
+      const uniqueName = `${safeBase}-${Date.now()}-${Math.round(Math.random() * 1e6)}${extension}`;
+      cb(null, uniqueName);
+    },
+  }),
+  limits: {
+    fileSize: MAX_VIDEO_FILE_SIZE,
+    files: 1,
+    fields: 20,
+    parts: 30,
+  },
+  fileFilter: (_req, file, cb) => {
+    const extension = path.extname(file.originalname || "").toLowerCase();
+    const mimeType = String(file.mimetype || "").toLowerCase();
+    const validExtensions = new Set([".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"]);
+    const validMime = mimeType.startsWith("video/");
+    const validExtension = validExtensions.has(extension);
+
+    if (!validMime && !validExtension) {
+      return cb(new Error("Unsupported video type. Allowed: MP4, MOV, M4V, AVI, MKV, WEBM"));
     }
 
     return cb(null, true);
@@ -156,12 +193,24 @@ export function uploadSingleFile(req, res, next) {
   });
 }
 
+export function uploadSingleVideoFile(req, res, next) {
+  videoUpload.single("video")(req, res, (error) => {
+    if (error) {
+      return next(error);
+    }
+    return next();
+  });
+}
+
 export function uploadErrorHandler(error, _req, res, next) {
   if (error instanceof multer.MulterError) {
     if (error.code === "LIMIT_FILE_SIZE") {
+      const isVideoUpload = String(_req?.originalUrl || "").includes("/video/");
       return res.status(400).json({
         success: false,
-        message: `File size must be ${MAX_FILE_SIZE_MB}MB or less`,
+        message: isVideoUpload
+          ? `File size must be ${MAX_VIDEO_FILE_SIZE_MB}MB or less`
+          : `File size must be ${MAX_FILE_SIZE_MB}MB or less`,
       });
     }
 

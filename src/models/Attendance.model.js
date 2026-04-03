@@ -49,8 +49,24 @@ const attendanceSchema = new mongoose.Schema(
     },
     markedBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Teacher",
-      required: true,
+      refPath: "markedByModel",
+      required: false,
+      default: null,
+    },
+    markedByModel: {
+      type: String,
+      enum: ["Teacher", "User"],
+      default: "Teacher",
+    },
+    markedByRole: {
+      type: String,
+      enum: ["teacher", "admin"],
+      default: "teacher",
+    },
+    markedByName: {
+      type: String,
+      trim: true,
+      default: "",
     },
     records: {
       type: [attendanceRecordSchema],

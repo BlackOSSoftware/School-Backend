@@ -7,6 +7,7 @@ import {
   getMyClassAttendanceByDateController,
   getMyStudentAttendanceReportController,
   getStudentMyAttendanceReportController,
+  updateAdminStudentAttendanceByDateController,
   markMyClassAttendanceController,
 } from "../../controllers/attendance.controller.js";
 import { adminMiddleware } from "../../middlewares/admin.middleware.js";
@@ -30,6 +31,11 @@ router.get(
   "/admin/class/:classId/student/:studentId/report",
   adminMiddleware,
   getAdminStudentAttendanceReportController
+);
+router.put(
+  "/admin/class/:classId/student/:studentId/date",
+  adminMiddleware,
+  updateAdminStudentAttendanceByDateController
 );
 
 router.get("/student/me/report", studentMiddleware, getStudentMyAttendanceReportController);

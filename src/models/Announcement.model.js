@@ -14,8 +14,13 @@ const announcementSchema = new mongoose.Schema(
     },
     announcementType: {
       type: String,
-      enum: ["school_wide", "class_wise"],
+      enum: ["school_wide", "class_wise", "teacher_only", "teachers_only"],
       required: true,
+    },
+    targetAudience: {
+      type: String,
+      enum: ["all", "teacher_only", "teachers_only"],
+      default: "all",
     },
     classIds: {
       type: [

@@ -17,7 +17,20 @@ function normalizeAnnouncementType(rawType) {
   if (["class_wise", "classwise", "class-wise", "class"].includes(value)) {
     return "class_wise";
   }
+  if (["teacher_only", "teacher-only", "teachersonly", "teachers_only", "teacher"].includes(value)) {
+    return "teacher_only";
+  }
   return "";
+}
+
+function normalizeTargetAudience(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  if (!normalized) return "all";
+  if (["all", "everyone", "school"].includes(normalized)) return "all";
+  if (["teacher_only", "teacher-only", "teachers_only", "teachersonly", "teacher"].includes(normalized)) {
+    return "teacher_only";
+  }
+  throw new Error("targetAudience must be all or teacher_only");
 }
 
 function normalizeClassIds(input) {
@@ -26,6 +39,44 @@ function normalizeClassIds(input) {
   const values = Array.isArray(input) ? input : [input];
   const normalized = [...new Set(values.map((item) => normalizeString(item)).filter(Boolean))];
   return normalized;
+}
+
+function normalizeAnnouncementTypeForResponse(type, targetAudience) {
+  const normalizedType = normalizeAnnouncementType(type);
+  const normalizedAudience = normalizeTargetAudience(targetAudience);
+  if (normalizedAudience === "teacher_only") {
+    return "teacher_only";
+  }
+  if (normalizedType === "teacher_only") {
+    return "teacher_only";
+  }
+  return normalizedType || "school_wide";
+}
+
+function normalizeAudienceForResponse(type, targetAudience) {
+  const normalizedAudience = normalizeTargetAudience(targetAudience);
+  if (normalizedAudience === "teacher_only") return "teacher_only";
+  const normalizedType = normalizeAnnouncementType(type);
+  if (normalizedType === "teacher_only") return "teacher_only";
+  return "all";
+}
+
+function toAnnouncementResponse(row) {
+  if (!row) return row;
+  const announcementType = normalizeAnnouncementTypeForResponse(
+    row.announcementType,
+    row.targetAudience
+  );
+  const targetAudience = normalizeAudienceForResponse(
+    row.announcementType,
+    row.targetAudience
+  );
+
+  return {
+    ...row,
+    announcementType,
+    targetAudience,
+  };
 }
 
 function getValidFcmTokenQuery() {
@@ -100,6 +151,17 @@ async function getSchoolWideRecipientTokens() {
   return [...students, ...teachers].map((item) => item.fcmToken);
 }
 
+async function getTeachersOnlyRecipientTokens() {
+  const teachers = await Teacher.find({
+    status: "active",
+    fcmToken: getValidFcmTokenQuery(),
+  })
+    .select("fcmToken")
+    .lean();
+
+  return teachers.map((item) => item.fcmToken);
+}
+
 async function getClassWiseRecipientTokens(classIds = []) {
   const [students, teachers] = await Promise.all([
     Student.find({
@@ -112,7 +174,7 @@ async function getClassWiseRecipientTokens(classIds = []) {
     Teacher.find({
       status: "active",
       fcmToken: getValidFcmTokenQuery(),
-      $or: [{ classTeacherOf: { $in: classIds } }, { "lectureAssignments.classId": { $in: classIds } }],
+      classTeacherOf: { $in: classIds },
     })
       .select("fcmToken")
       .lean(),
@@ -122,19 +184,27 @@ async function getClassWiseRecipientTokens(classIds = []) {
 }
 
 async function dispatchAnnouncementNotification(announcement) {
-  const isSchoolWide = announcement.announcementType === "school_wide";
+  const normalizedType = normalizeAnnouncementType(announcement.announcementType);
+  const isSchoolWide = normalizedType === "school_wide";
   const classIds = (announcement.classIds || []).map((item) => String(item));
+  const targetAudience = normalizeTargetAudience(announcement.targetAudience);
+  const isTeachersOnly =
+    targetAudience === "teacher_only" || normalizedType === "teacher_only";
 
-  const recipientTokens = isSchoolWide
-    ? await getSchoolWideRecipientTokens()
-    : await getClassWiseRecipientTokens(classIds);
+  const recipientTokens =
+    isTeachersOnly
+      ? await getTeachersOnlyRecipientTokens()
+      : isSchoolWide
+        ? await getSchoolWideRecipientTokens()
+        : await getClassWiseRecipientTokens(classIds);
 
   const delivery = await sendPushNotificationToTokens(recipientTokens, {
     title: announcement.title,
     body: announcement.description,
     data: {
       announcementId: String(announcement._id),
-      announcementType: announcement.announcementType,
+      announcementType: normalizedType,
+      targetAudience,
       createdByRole: announcement.createdByRole,
       createdByName: announcement.createdByName,
     },
@@ -171,6 +241,7 @@ async function dispatchAnnouncementNotification(announcement) {
 
 function buildAnnouncementFilterForStudent(classId) {
   return {
+    targetAudience: { $nin: ["teacher_only", "teachers_only"] },
     $or: [
       { announcementType: "school_wide" },
       {
@@ -182,7 +253,7 @@ function buildAnnouncementFilterForStudent(classId) {
 }
 
 function buildAnnouncementFilterForTeacher(classIds = []) {
-  const clauses = [{ announcementType: "school_wide" }];
+  const clauses = [{ announcementType: "school_wide" }, { announcementType: { $in: ["teacher_only", "teachers_only"] } }];
   if (classIds.length > 0) {
     clauses.push({
       announcementType: "class_wise",
@@ -190,28 +261,41 @@ function buildAnnouncementFilterForTeacher(classIds = []) {
     });
   }
 
-  return { $or: clauses };
+  return {
+    $or: clauses,
+  };
 }
 
 export async function createAdminAnnouncement(payload = {}, adminUser = {}) {
   const title = normalizeString(payload.title);
   const description = normalizeString(payload.description);
-  const announcementType = normalizeAnnouncementType(
+  let announcementType = normalizeAnnouncementType(
     payload.announcementType || payload.type || payload.audienceType
   );
+  let targetAudience = normalizeTargetAudience(payload.targetAudience || payload.audience);
   const classIds = normalizeClassIds(payload.classIds || payload.classId);
+  const isTeacherOnlyRequest =
+    announcementType === "teacher_only" || targetAudience === "teacher_only";
+
+  if (!announcementType && targetAudience === "teacher_only") {
+    announcementType = "teacher_only";
+  }
+  if (isTeacherOnlyRequest) {
+    announcementType = "teacher_only";
+    targetAudience = "teacher_only";
+  }
 
   if (!title) throw new Error("Title is required");
   if (!description) throw new Error("Description is required");
   if (!announcementType) {
-    throw new Error("announcementType must be school_wide or class_wise");
+    throw new Error("announcementType must be school_wide, class_wise, or teacher_only");
   }
 
-  if (announcementType === "class_wise" && classIds.length === 0) {
+  if (targetAudience === "all" && announcementType === "class_wise" && classIds.length === 0) {
     throw new Error("At least one class ID is required for class-wise announcement");
   }
 
-  if (announcementType === "class_wise") {
+  if (targetAudience === "all" && announcementType === "class_wise") {
     await validateClassIds(classIds);
   }
 
@@ -219,7 +303,8 @@ export async function createAdminAnnouncement(payload = {}, adminUser = {}) {
     title,
     description,
     announcementType,
-    classIds: announcementType === "class_wise" ? classIds : [],
+    targetAudience,
+    classIds: announcementType === "class_wise" && targetAudience === "all" ? classIds : [],
     createdById: adminUser._id,
     createdByRole: "admin",
     createdByName: normalizeString(adminUser.name || "Principal"),
@@ -230,7 +315,7 @@ export async function createAdminAnnouncement(payload = {}, adminUser = {}) {
     .populate("classIds", "name section")
     .lean();
 
-  return { announcement: populated, delivery };
+  return { announcement: toAnnouncementResponse(populated), delivery };
 }
 
 export async function createTeacherAnnouncement(payload = {}, teacherUser = {}) {
@@ -256,6 +341,7 @@ export async function createTeacherAnnouncement(payload = {}, teacherUser = {}) 
     title,
     description,
     announcementType: "class_wise",
+    targetAudience: "all",
     classIds,
     createdById: teacherUser._id,
     createdByRole: "teacher",
@@ -267,7 +353,7 @@ export async function createTeacherAnnouncement(payload = {}, teacherUser = {}) 
     .populate("classIds", "name section")
     .lean();
 
-  return { announcement: populated, delivery };
+  return { announcement: toAnnouncementResponse(populated), delivery };
 }
 
 export async function getAllAnnouncementsForAdmin(query = {}) {
@@ -277,7 +363,11 @@ export async function getAllAnnouncementsForAdmin(query = {}) {
 
   const filter = {};
   if (typeFilter) {
-    filter.announcementType = typeFilter;
+    if (typeFilter === "teacher_only") {
+      filter.announcementType = { $in: ["teacher_only", "teachers_only"] };
+    } else {
+      filter.announcementType = typeFilter;
+    }
   }
   if (["admin", "teacher"].includes(creatorRole)) {
     filter.createdByRole = creatorRole;
@@ -294,7 +384,7 @@ export async function getAllAnnouncementsForAdmin(query = {}) {
   ]);
 
   return {
-    data: rows,
+    data: rows.map(toAnnouncementResponse),
     total,
     page,
     limit,
@@ -345,7 +435,7 @@ export async function getMyAnnouncements(user = {}, query = {}) {
   ]);
 
   return {
-    data: rows,
+    data: rows.map(toAnnouncementResponse),
     total,
     page,
     limit,
