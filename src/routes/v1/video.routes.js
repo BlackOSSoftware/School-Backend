@@ -1,5 +1,8 @@
 import { Router } from "express";
 import {
+  createAdminVideoChunkAppendController,
+  createAdminVideoChunkCompleteController,
+  createAdminVideoChunkInitController,
   createAdminVideoController,
   deleteAdminVideoController,
   getAdminVideosController,
@@ -16,6 +19,22 @@ import {
 } from "../../middlewares/upload.middleware.js";
 
 const router = Router();
+
+router.post(
+  "/admin/create/chunk/init",
+  adminMiddleware,
+  createAdminVideoChunkInitController
+);
+router.post(
+  "/admin/create/chunk/:uploadId",
+  adminMiddleware,
+  createAdminVideoChunkAppendController
+);
+router.post(
+  "/admin/create/chunk/:uploadId/complete",
+  adminMiddleware,
+  createAdminVideoChunkCompleteController
+);
 
 router.post(
   "/admin/create",
