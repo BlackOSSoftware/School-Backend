@@ -1,23 +1,6 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
-const lectureAssignmentSchema = new mongoose.Schema(
-  {
-    classId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Class",
-      required: true,
-    },
-    subject: {
-      type: String,
-      required: true,
-      trim: true,
-      uppercase: true,
-    },
-  },
-  { _id: false }
-);
-
 const teacherSchema = new mongoose.Schema(
   {
     name: {
@@ -56,20 +39,9 @@ const teacherSchema = new mongoose.Schema(
     classTeacherOf: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Class",
-      required: true,
+      default: null,
       unique: true,
-    },
-    subjects: {
-      type: [String],
-      required: true,
-      validate: {
-        validator: (values) => Array.isArray(values) && values.length > 0,
-        message: "At least one subject is required",
-      },
-    },
-    lectureAssignments: {
-      type: [lectureAssignmentSchema],
-      default: [],
+      sparse: true,
     },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,

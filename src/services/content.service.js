@@ -142,21 +142,12 @@ async function deleteUploadedFile(file) {
 }
 
 async function getTeacherAssignmentsByClass(teacherId, classId) {
-  const teacher = await Teacher.findById(teacherId).lean();
+  const teacher = await Teacher.findById(teacherId).select("classTeacherOf").lean();
   if (!teacher) throw new Error("Teacher not found");
 
-  const assignmentSubjects = (teacher.lectureAssignments || [])
-    .filter((assignment) => String(assignment.classId) === String(classId))
-    .map((assignment) => normalizeSubject(assignment.subject))
-    .filter(Boolean);
-
-  const uniqueSubjects = [...new Set(assignmentSubjects)];
-  if (uniqueSubjects.length > 0) {
-    return uniqueSubjects;
-  }
-
   if (String(teacher.classTeacherOf || "") === String(classId)) {
-    return [...new Set((teacher.subjects || []).map((item) => normalizeSubject(item)).filter(Boolean))];
+    const classRow = await ClassModel.findById(classId).select("subjects").lean();
+    return [...new Set((classRow?.subjects || []).map((item) => normalizeSubject(item)).filter(Boolean))];
   }
 
   return [];

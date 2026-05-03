@@ -4,9 +4,11 @@ import {
   getAdminClassAttendanceByDateController,
   getAdminDashboardSummaryController,
   getAdminStudentAttendanceReportController,
+  getTeacherAttendancePolicyController,
   getMyClassAttendanceByDateController,
   getMyStudentAttendanceReportController,
   getStudentMyAttendanceReportController,
+  updateTeacherAttendancePolicyController,
   updateAdminStudentAttendanceByDateController,
   markMyClassAttendanceController,
 } from "../../controllers/attendance.controller.js";
@@ -18,6 +20,7 @@ const router = Router();
 
 router.put("/teacher/class/:classId/mark", teacherMiddleware, markMyClassAttendanceController);
 router.get("/teacher/class/:classId/date", teacherMiddleware, getMyClassAttendanceByDateController);
+router.get("/teacher/policy", teacherMiddleware, getTeacherAttendancePolicyController);
 router.get(
   "/teacher/class/:classId/student/:studentId/report",
   teacherMiddleware,
@@ -26,6 +29,8 @@ router.get(
 
 router.get("/admin/date-summary", adminMiddleware, getAdminAttendanceDateSummaryController);
 router.get("/admin/dashboard-summary", adminMiddleware, getAdminDashboardSummaryController);
+router.get("/admin/teacher-policy", adminMiddleware, getTeacherAttendancePolicyController);
+router.put("/admin/teacher-policy", adminMiddleware, updateTeacherAttendancePolicyController);
 router.get("/admin/class/:classId/date", adminMiddleware, getAdminClassAttendanceByDateController);
 router.get(
   "/admin/class/:classId/student/:studentId/report",

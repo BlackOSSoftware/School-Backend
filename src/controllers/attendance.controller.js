@@ -3,9 +3,11 @@ import {
   getAdminClassAttendanceByDate,
   getAdminDashboardSummary,
   getAdminStudentAttendanceReport,
+  getTeacherAttendancePolicy,
   getMyClassAttendanceByDate,
   getMyStudentAttendanceReport,
   getStudentMyAttendanceReport,
+  updateTeacherAttendancePolicy,
   updateAdminStudentAttendanceByDate,
   markMyClassAttendance,
 } from "../services/attendance.service.js";
@@ -39,6 +41,22 @@ export async function getMyClassAttendanceByDateController(req, res) {
     return res.status(400).json({
       success: false,
       message: error.message || "Failed to fetch class attendance",
+    });
+  }
+}
+
+export async function getTeacherAttendancePolicyController(_req, res) {
+  try {
+    const result = await getTeacherAttendancePolicy();
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Failed to fetch attendance policy",
     });
   }
 }
@@ -150,6 +168,23 @@ export async function updateAdminStudentAttendanceByDateController(req, res) {
     return res.status(400).json({
       success: false,
       message: error.message || "Failed to update attendance",
+    });
+  }
+}
+
+export async function updateTeacherAttendancePolicyController(req, res) {
+  try {
+    const result = await updateTeacherAttendancePolicy(req.user?._id, req.body);
+
+    return res.status(200).json({
+      success: true,
+      message: "Teacher attendance setting updated successfully",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Failed to update attendance policy",
     });
   }
 }

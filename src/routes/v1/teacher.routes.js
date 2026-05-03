@@ -1,6 +1,7 @@
 import { Router } from "express";
 
 import {
+  bulkCreateTeachersController,
   createTeacherController,
   deleteTeacherController,
   getAllTeachersController,
@@ -32,6 +33,7 @@ const router = Router();
 ========================= */
 
 router.post("/create", adminMiddleware, createTeacherController);
+router.post("/bulk-create", adminMiddleware, bulkCreateTeachersController);
 router.get("/all", adminMiddleware, getAllTeachersController);
 router.get("/:id", adminMiddleware, getTeacherByIdController);
 router.put("/:id", adminMiddleware, updateTeacherController);

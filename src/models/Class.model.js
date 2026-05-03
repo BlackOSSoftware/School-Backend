@@ -13,6 +13,10 @@ const classSchema = new mongoose.Schema(
       trim: true,
       uppercase: true, // auto uppercase
     },
+    subjects: {
+      type: [String],
+      default: [],
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

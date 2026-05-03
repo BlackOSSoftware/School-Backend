@@ -111,7 +111,7 @@ async function validateClassIds(classIds = []) {
 
 async function getTeacherAssignedClassIds(teacherId) {
   const teacher = await Teacher.findById(teacherId)
-    .select("classTeacherOf lectureAssignments.classId")
+    .select("classTeacherOf")
     .lean();
 
   if (!teacher) {
@@ -121,12 +121,6 @@ async function getTeacherAssignedClassIds(teacherId) {
   const classIds = new Set();
   if (teacher.classTeacherOf) {
     classIds.add(String(teacher.classTeacherOf));
-  }
-
-  for (const assignment of teacher.lectureAssignments || []) {
-    if (assignment.classId) {
-      classIds.add(String(assignment.classId));
-    }
   }
 
   return [...classIds];
@@ -406,16 +400,13 @@ export async function getMyAnnouncements(user = {}, query = {}) {
     filter = buildAnnouncementFilterForStudent(student.classId);
   } else if (role === "teacher") {
     const teacher = await Teacher.findById(user._id)
-      .select("status classTeacherOf lectureAssignments.classId")
+      .select("status classTeacherOf")
       .lean();
     if (!teacher) throw new Error("Teacher not found");
     if (teacher.status !== "active") throw new Error("Account inactive");
 
     const classIds = new Set();
     if (teacher.classTeacherOf) classIds.add(String(teacher.classTeacherOf));
-    for (const assignment of teacher.lectureAssignments || []) {
-      if (assignment.classId) classIds.add(String(assignment.classId));
-    }
 
     filter = buildAnnouncementFilterForTeacher([...classIds]);
   } else if (role === "admin") {

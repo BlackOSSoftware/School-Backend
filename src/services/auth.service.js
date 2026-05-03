@@ -75,7 +75,7 @@ export async function loginUser(payload = {}) {
   }
 
   if (!user) {
-    throw new Error("Invalid credentials");
+    throw new Error("Invalid email or scholar number");
   }
 
   if (user.status !== "active") {
@@ -85,7 +85,7 @@ export async function loginUser(payload = {}) {
   const isMatch = await user.comparePassword(password);
 
   if (!isMatch) {
-    throw new Error("Invalid credentials");
+    throw new Error("Invalid password");
   }
 
   await saveFcmTokenOnLogin(user, fcmToken);

@@ -1,4 +1,5 @@
 import {
+  bulkCreateTeachers,
   createTeacher,
   deleteTeacher,
   getAllTeachers,
@@ -22,6 +23,23 @@ export async function createTeacherController(req, res) {
     return res.status(400).json({
       success: false,
       message: error.message || "Teacher creation failed",
+    });
+  }
+}
+
+export async function bulkCreateTeachersController(req, res) {
+  try {
+    const result = await bulkCreateTeachers(req.body, req.user?._id);
+
+    return res.status(201).json({
+      success: true,
+      message: "Teachers created successfully",
+      ...result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Teachers creation failed",
     });
   }
 }

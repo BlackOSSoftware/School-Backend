@@ -2,6 +2,15 @@ import mongoose from "mongoose";
 import ClassModel from "../models/Class.model.js";
 import { deleteCacheByPattern, getCache, setCache } from "../config/redis.js";
 
+function normalizeSubject(subject = "") {
+  return String(subject || "").trim().toUpperCase();
+}
+
+function normalizeSubjects(subjects = []) {
+  if (!Array.isArray(subjects)) return [];
+  return [...new Set(subjects.map((item) => normalizeSubject(item)).filter(Boolean))];
+}
+
 async function invalidateClassCache() {
   await deleteCacheByPattern("classes:*");
   await deleteCacheByPattern("teachers:*");
@@ -10,15 +19,19 @@ async function invalidateClassCache() {
 
 export async function createClass(payload = {}, adminId) {
   const name = String(payload.name || "").trim();
-  const section = String(payload.section || "").trim().toUpperCase();
+  const rawSection = Array.isArray(payload.section) ? payload.section[0] : payload.section;
+  const section = String(rawSection || "").trim().toUpperCase();
+  const subjects = normalizeSubjects(payload.subjects);
 
   if (!name) throw new Error("Class name is required");
   if (!section) throw new Error("Section is required");
+  if (subjects.length === 0) throw new Error("At least one subject is required");
 
   try {
     const created = await ClassModel.create({
       name,
       section,
+      subjects,
       createdBy: adminId,
     });
 
@@ -104,8 +117,14 @@ export async function updateClass(classId, payload = {}) {
 
   const newSection =
     payload.section !== undefined
-      ? String(payload.section).trim().toUpperCase()
+      ? String(Array.isArray(payload.section) ? payload.section[0] : payload.section)
+          .trim()
+          .toUpperCase()
       : existing.section;
+  const newSubjects =
+    payload.subjects !== undefined
+      ? normalizeSubjects(payload.subjects)
+      : normalizeSubjects(existing.subjects);
 
   // 🔥 Check duplicate before updating
   const duplicate = await ClassModel.findOne({
@@ -117,10 +136,13 @@ export async function updateClass(classId, payload = {}) {
   if (duplicate) {
     throw new Error("This class & section combination already exists");
   }
+  if (newSubjects.length === 0) {
+    throw new Error("At least one subject is required");
+  }
 
   const updated = await ClassModel.findByIdAndUpdate(
     classId,
-    { name: newName, section: newSection },
+    { name: newName, section: newSection, subjects: newSubjects },
     { new: true, runValidators: true }
   );
 

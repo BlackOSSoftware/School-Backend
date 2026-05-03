@@ -6,24 +6,6 @@ import Session from "../models/Session.model.js";
 import { deleteCacheByPattern, getCache, setCache } from "../config/redis.js";
 import { generateAccessToken } from "../utils/jwt-utils.js";
 
-function normalizeSubject(subject = "") {
-  return String(subject).trim().toUpperCase();
-}
-
-function normalizeSubjects(subjects = []) {
-  if (!Array.isArray(subjects)) return [];
-  return [...new Set(subjects.map((item) => normalizeSubject(item)).filter(Boolean))];
-}
-
-function normalizeAssignments(assignments = []) {
-  if (!Array.isArray(assignments)) return [];
-
-  return assignments.map((item) => ({
-    classId: String(item.classId || "").trim(),
-    subject: normalizeSubject(item.subject),
-  }));
-}
-
 async function validateClassId(classId, label = "Class ID") {
   if (!mongoose.Types.ObjectId.isValid(classId)) {
     throw new Error(`Invalid ${label}`);
@@ -32,29 +14,6 @@ async function validateClassId(classId, label = "Class ID") {
   const exists = await ClassModel.exists({ _id: classId });
   if (!exists) {
     throw new Error(`${label.replace(" ID", "")} not found`);
-  }
-}
-
-async function validateAssignments(lectureAssignments = [], subjects = []) {
-  const usedKeys = new Set();
-
-  for (const item of lectureAssignments) {
-    if (!item.classId) throw new Error("Each lecture assignment must include classId");
-    if (!item.subject) throw new Error("Each lecture assignment must include subject");
-
-    await validateClassId(item.classId, "Lecture class ID");
-
-    if (!subjects.includes(item.subject)) {
-      throw new Error(
-        `Lecture assignment subject "${item.subject}" must be present in teacher subjects`
-      );
-    }
-
-    const key = `${item.classId}:${item.subject}`;
-    if (usedKeys.has(key)) {
-      throw new Error("Duplicate lecture assignment found for same class and subject");
-    }
-    usedKeys.add(key);
   }
 }
 
@@ -71,22 +30,30 @@ function buildPagination(query = {}, defaults = { page: 1, limit: 10, maxLimit: 
   return { page, limit, skip: (page - 1) * limit };
 }
 
-export async function createTeacher(payload = {}, adminId) {
-  const name = String(payload.name || "").trim();
-  const email = String(payload.email || "").trim().toLowerCase();
-  const password = String(payload.password || "");
-  const classTeacherOf = String(payload.classTeacherOf || "").trim();
-  const subjects = normalizeSubjects(payload.subjects);
-  const lectureAssignments = normalizeAssignments(payload.lectureAssignments);
+function normalizeTeacherPayload(payload = {}) {
+  return {
+    name: String(payload.name || "").trim(),
+    email: String(payload.email || "").trim().toLowerCase(),
+    password: String(payload.password || ""),
+    classTeacherOf: String(payload.classTeacherOf || "").trim(),
+  };
+}
+
+async function validateTeacherPayload(payload = {}) {
+  const normalized = normalizeTeacherPayload(payload);
+  const { name, email, password, classTeacherOf } = normalized;
 
   if (!name) throw new Error("Teacher name is required");
   if (!email) throw new Error("Teacher email is required");
   if (!password) throw new Error("Teacher password is required");
-  if (!classTeacherOf) throw new Error("classTeacherOf is required");
-  if (subjects.length === 0) throw new Error("At least one subject is required");
+  if (!classTeacherOf) throw new Error("Class teacher class ID is required");
 
   await validateClassId(classTeacherOf, "Class teacher class ID");
-  await validateAssignments(lectureAssignments, subjects);
+  return normalized;
+}
+
+export async function createTeacher(payload = {}, adminId) {
+  const { name, email, password, classTeacherOf } = await validateTeacherPayload(payload);
 
   try {
     const created = await Teacher.create({
@@ -94,13 +61,85 @@ export async function createTeacher(payload = {}, adminId) {
       email,
       password,
       classTeacherOf,
-      subjects,
-      lectureAssignments,
       createdBy: adminId,
     });
 
     await invalidateTeacherCache();
     return created;
+  } catch (error) {
+    if (error.code === 11000 && error.keyPattern?.email) {
+      throw new Error("Teacher email already exists");
+    }
+    if (error.code === 11000 && error.keyPattern?.classTeacherOf) {
+      throw new Error("This class already has a class teacher");
+    }
+    throw error;
+  }
+}
+
+export async function bulkCreateTeachers(payload = {}, adminId) {
+  const teachers = Array.isArray(payload?.teachers) ? payload.teachers : [];
+  if (!teachers.length) {
+    throw new Error("teachers array is required");
+  }
+
+  const normalizedTeachers = [];
+  const seenEmails = new Set();
+  const seenClassTeacherOf = new Set();
+
+  for (let index = 0; index < teachers.length; index += 1) {
+    const normalized = await validateTeacherPayload(teachers[index]);
+    const label = `Teacher at row ${index + 1}`;
+
+    if (seenEmails.has(normalized.email)) {
+      throw new Error(`${label}: duplicate email in request`);
+    }
+    seenEmails.add(normalized.email);
+
+    if (seenClassTeacherOf.has(normalized.classTeacherOf)) {
+      throw new Error(`${label}: duplicate classTeacherOf in request`);
+    }
+    seenClassTeacherOf.add(normalized.classTeacherOf);
+
+    normalizedTeachers.push(normalized);
+  }
+
+  const [existingTeachersByEmail, existingTeachersByClass] = await Promise.all([
+    Teacher.find({ email: { $in: normalizedTeachers.map((item) => item.email) } })
+      .select("email")
+      .lean(),
+    Teacher.find({ classTeacherOf: { $in: [...seenClassTeacherOf] } })
+      .select("classTeacherOf")
+      .lean(),
+  ]);
+
+  if (existingTeachersByEmail.length) {
+    throw new Error(`Teacher email already exists: ${existingTeachersByEmail[0].email}`);
+  }
+
+  if (existingTeachersByClass.length) {
+    throw new Error("One or more classes already have a class teacher");
+  }
+
+  try {
+    const createdTeachers = [];
+
+    for (const teacher of normalizedTeachers) {
+      const created = await Teacher.create({
+        name: teacher.name,
+        email: teacher.email,
+        password: teacher.password,
+        classTeacherOf: teacher.classTeacherOf,
+        createdBy: adminId,
+      });
+      createdTeachers.push(created);
+    }
+
+    await invalidateTeacherCache();
+    return {
+      createdCount: createdTeachers.length,
+      teachers: createdTeachers,
+    };
   } catch (error) {
     if (error.code === 11000 && error.keyPattern?.email) {
       throw new Error("Teacher email already exists");
@@ -125,7 +164,6 @@ export async function getAllTeachers(query = {}) {
         $or: [
           { name: { $regex: search, $options: "i" } },
           { email: { $regex: search, $options: "i" } },
-          { subjects: { $regex: search, $options: "i" } },
         ],
       }
     : {};
@@ -135,8 +173,7 @@ export async function getAllTeachers(query = {}) {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .populate("classTeacherOf", "name section")
-      .populate("lectureAssignments.classId", "name section")
+      .populate("classTeacherOf", "name section subjects")
       .lean(),
     Teacher.countDocuments(filter),
   ]);
@@ -165,8 +202,7 @@ export async function getTeacherById(teacherId) {
   if (cached) return JSON.parse(cached);
 
   const row = await Teacher.findById(teacherId)
-    .populate("classTeacherOf", "name section")
-    .populate("lectureAssignments.classId", "name section")
+    .populate("classTeacherOf", "name section subjects")
     .lean();
 
   if (!row) throw new Error("Teacher not found");
@@ -182,45 +218,32 @@ export async function updateTeacher(teacherId, payload = {}) {
   const existing = await Teacher.findById(teacherId).select("+password");
   if (!existing) throw new Error("Teacher not found");
 
-  const nextName =
-    payload.name !== undefined ? String(payload.name).trim() : existing.name;
+  const nextName = payload.name !== undefined ? String(payload.name).trim() : existing.name;
   const nextEmail =
     payload.email !== undefined
       ? String(payload.email).trim().toLowerCase()
       : existing.email;
-  const nextPassword =
-    payload.password !== undefined ? String(payload.password) : undefined;
-  const nextStatus = payload.status !== undefined ? String(payload.status).trim() : existing.status;
+  const nextPassword = payload.password !== undefined ? String(payload.password) : undefined;
+  const nextStatus =
+    payload.status !== undefined ? String(payload.status).trim() : existing.status;
   const nextClassTeacherOf =
     payload.classTeacherOf !== undefined
       ? String(payload.classTeacherOf).trim()
-      : String(existing.classTeacherOf);
-  const nextSubjects =
-    payload.subjects !== undefined
-      ? normalizeSubjects(payload.subjects)
-      : normalizeSubjects(existing.subjects);
-  const nextLectureAssignments =
-    payload.lectureAssignments !== undefined
-      ? normalizeAssignments(payload.lectureAssignments)
-      : normalizeAssignments(existing.lectureAssignments);
+      : String(existing.classTeacherOf || "").trim();
 
   if (!nextName) throw new Error("Teacher name is required");
   if (!nextEmail) throw new Error("Teacher email is required");
+  if (!nextClassTeacherOf) throw new Error("Class teacher class ID is required");
   if (!["active", "inactive"].includes(nextStatus)) {
     throw new Error("Status must be active or inactive");
   }
-  if (!nextClassTeacherOf) throw new Error("classTeacherOf is required");
-  if (nextSubjects.length === 0) throw new Error("At least one subject is required");
 
   await validateClassId(nextClassTeacherOf, "Class teacher class ID");
-  await validateAssignments(nextLectureAssignments, nextSubjects);
 
   existing.name = nextName;
   existing.email = nextEmail;
   existing.status = nextStatus;
   existing.classTeacherOf = nextClassTeacherOf;
-  existing.subjects = nextSubjects;
-  existing.lectureAssignments = nextLectureAssignments;
 
   if (nextPassword !== undefined) {
     if (!nextPassword) throw new Error("Password cannot be empty");
@@ -289,24 +312,12 @@ export async function getTeacherClassesAndStudents(teacherId, query = {}) {
   const { page, limit, skip } = buildPagination(query);
 
   const teacher = await Teacher.findById(teacherId)
-    .populate("classTeacherOf", "name section")
-    .populate("lectureAssignments.classId", "name section")
+    .populate("classTeacherOf", "name section subjects")
     .lean();
 
   if (!teacher) throw new Error("Teacher not found");
 
-  const classMap = new Map();
-  if (teacher.classTeacherOf) {
-    classMap.set(String(teacher.classTeacherOf._id), teacher.classTeacherOf);
-  }
-
-  for (const assignment of teacher.lectureAssignments || []) {
-    if (assignment.classId?._id) {
-      classMap.set(String(assignment.classId._id), assignment.classId);
-    }
-  }
-
-  const assignedClassIds = [...classMap.keys()];
+  const assignedClassIds = teacher.classTeacherOf?._id ? [String(teacher.classTeacherOf._id)] : [];
   const requestedSessionId = String(query.sessionId || "").trim();
   if (requestedSessionId && !mongoose.Types.ObjectId.isValid(requestedSessionId)) {
     throw new Error("Invalid session ID");
@@ -332,7 +343,7 @@ export async function getTeacherClassesAndStudents(teacherId, query = {}) {
     ? await Promise.all([
         Student.find(filter)
           .select("name scholarNumber parentName phoneNumber classId sessionId status")
-          .populate("classId", "name section")
+          .populate("classId", "name section subjects")
           .populate("sessionId", "name startDate endDate isActive")
           .sort({ name: 1 })
           .skip(skip)
@@ -348,9 +359,11 @@ export async function getTeacherClassesAndStudents(teacherId, query = {}) {
       name: teacher.name,
       email: teacher.email,
       classTeacherOf: teacher.classTeacherOf,
-      lectureAssignments: teacher.lectureAssignments,
+      classSubjects: Array.isArray(teacher.classTeacherOf?.subjects)
+        ? teacher.classTeacherOf.subjects
+        : [],
     },
-    assignedClasses: [...classMap.values()],
+    assignedClasses: teacher.classTeacherOf ? [teacher.classTeacherOf] : [],
     students,
     totalStudents,
     page,
@@ -374,15 +387,7 @@ export async function getTeacherStudentsByAssignedClasses(teacherId, query = {})
   if (!teacher) throw new Error("Teacher not found");
 
   const assignedClassIds = new Set();
-  if (teacher.classTeacherOf) {
-    assignedClassIds.add(String(teacher.classTeacherOf));
-  }
-
-  for (const assignment of teacher.lectureAssignments || []) {
-    if (assignment.classId) {
-      assignedClassIds.add(String(assignment.classId));
-    }
-  }
+  if (teacher.classTeacherOf) assignedClassIds.add(String(teacher.classTeacherOf));
 
   const selectedClassId = String(query.classId || "").trim();
   if (selectedClassId && !assignedClassIds.has(selectedClassId)) {
@@ -399,9 +404,7 @@ export async function getTeacherStudentsByAssignedClasses(teacherId, query = {})
     : await Session.findOne({ isActive: true }).select("_id").lean();
   const resolvedSessionId = requestedSessionId || String(activeSession?._id || "");
 
-  const classFilter = selectedClassId
-    ? [selectedClassId]
-    : [...assignedClassIds];
+  const classFilter = selectedClassId ? [selectedClassId] : [...assignedClassIds];
 
   if (classFilter.length === 0) {
     return {
@@ -440,7 +443,7 @@ export async function getTeacherStudentsByAssignedClasses(teacherId, query = {})
       .skip(skip)
       .limit(limit)
       .select("name scholarNumber parentName phoneNumber classId sessionId status")
-      .populate("classId", "name section")
+      .populate("classId", "name section subjects")
       .populate("sessionId", "name startDate endDate isActive")
       .lean(),
     Student.countDocuments(filter),

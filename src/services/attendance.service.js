@@ -5,6 +5,7 @@ import Student from "../models/Student.model.js";
 import ClassModel from "../models/Class.model.js";
 import Session from "../models/Session.model.js";
 import User from "../models/User.model.js";
+import AppSetting from "../models/AppSetting.model.js";
 import { sendPushNotificationToTokens } from "./notification.service.js";
 
 function normalizeString(value) {
@@ -85,6 +86,28 @@ function parseDateRange(query = {}) {
 function calculatePercentage(present, total) {
   if (!total) return 0;
   return Number(((present / total) * 100).toFixed(2));
+}
+
+async function getGlobalAppSetting() {
+  return AppSetting.findOneAndUpdate(
+    { key: "global" },
+    {
+      $setOnInsert: {
+        key: "global",
+        teacherPastAttendanceEnabled: false,
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true,
+    }
+  ).lean();
+}
+
+async function isTeacherPastAttendanceEnabled() {
+  const settings = await getGlobalAppSetting();
+  return Boolean(settings?.teacherPastAttendanceEnabled);
 }
 
 async function getClassOrThrow(classId) {
@@ -364,9 +387,14 @@ export async function markMyClassAttendance(teacherId, classId, payload = {}) {
 
   const dateKey = parseDateInputOrToday(payload.date);
   const todayKey = getTodayLocalDateKey();
+  const canEditPastDates = await isTeacherPastAttendanceEnabled();
 
-  if (dateKey !== todayKey) {
-    throw new Error(`Attendance can only be marked/edited for today (${todayKey})`);
+  if (dateKey > todayKey) {
+    throw new Error(`Attendance cannot be marked for future dates. Today is ${todayKey}`);
+  }
+
+  if (dateKey < todayKey && !canEditPastDates) {
+    throw new Error("Past date attendance is locked by admin settings");
   }
 
   const session = await resolveSessionForClassAttendance(dateKey);
@@ -407,6 +435,58 @@ export async function markMyClassAttendance(teacherId, classId, payload = {}) {
   await dispatchAttendanceNotifications({ classRow, dateKey, records, students });
 
   return buildClassAttendanceResponse(classRow, attendance, students);
+}
+
+export async function getTeacherAttendancePolicy() {
+  const settings = await getGlobalAppSetting();
+
+  return {
+    canMarkPastDates: Boolean(settings?.teacherPastAttendanceEnabled),
+    updatedAt: settings?.updatedAt || null,
+    updatedByName: String(settings?.teacherPastAttendanceUpdatedByName || "").trim(),
+  };
+}
+
+export async function updateTeacherAttendancePolicy(adminId, payload = {}) {
+  const admin = await User.findById(adminId).select("_id name role status").lean();
+  if (!admin) {
+    throw new Error("Admin not found");
+  }
+  if (admin.role !== "admin") {
+    throw new Error("Admin access only");
+  }
+  if (admin.status !== "active") {
+    throw new Error("Account inactive");
+  }
+
+  if (typeof payload?.canMarkPastDates !== "boolean") {
+    throw new Error("canMarkPastDates must be true or false");
+  }
+
+  const settings = await AppSetting.findOneAndUpdate(
+    { key: "global" },
+    {
+      $set: {
+        teacherPastAttendanceEnabled: payload.canMarkPastDates,
+        teacherPastAttendanceUpdatedBy: admin._id,
+        teacherPastAttendanceUpdatedByName: admin.name || "Admin",
+      },
+      $setOnInsert: {
+        key: "global",
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true,
+    }
+  ).lean();
+
+  return {
+    canMarkPastDates: Boolean(settings?.teacherPastAttendanceEnabled),
+    updatedAt: settings?.updatedAt || null,
+    updatedByName: String(settings?.teacherPastAttendanceUpdatedByName || "").trim(),
+  };
 }
 
 export async function getMyClassAttendanceByDate(teacherId, classId, query = {}) {
