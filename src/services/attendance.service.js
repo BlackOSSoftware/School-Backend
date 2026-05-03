@@ -12,6 +12,25 @@ function normalizeString(value) {
   return String(value || "").trim();
 }
 
+function normalizeDateKeyInput(value = "") {
+  const raw = normalizeString(value);
+  if (!raw) {
+    return "";
+  }
+
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+  }
+
+  const displayMatch = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (displayMatch) {
+    return `${displayMatch[3]}-${displayMatch[2]}-${displayMatch[1]}`;
+  }
+
+  return raw;
+}
+
 function isValidObjectId(value) {
   return mongoose.Types.ObjectId.isValid(value);
 }
@@ -52,31 +71,61 @@ function getTodayLocalDateKey() {
   return toLocalDateKey(new Date());
 }
 
+function parseLocalDateKeyToTimestamp(dateKey) {
+  const normalized = normalizeDateKeyInput(dateKey);
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    throw new Error("date must be in YYYY-MM-DD or DD/MM/YYYY format");
+  }
+
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const date = new Date(year, monthIndex, day, 0, 0, 0, 0);
+  return date.getTime();
+}
+
+function compareDateKeys(leftDateKey, rightDateKey) {
+  const left = parseLocalDateKeyToTimestamp(leftDateKey);
+  const right = parseLocalDateKeyToTimestamp(rightDateKey);
+  if (left === right) return 0;
+  return left > right ? 1 : -1;
+}
+
+function formatDisplayDateKey(dateKey) {
+  const normalized = normalizeDateKeyInput(dateKey);
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return normalized;
+  }
+  return `${match[3]}/${match[2]}/${match[1]}`;
+}
+
 function parseDateInputOrToday(rawDate) {
-  const value = normalizeString(rawDate);
+  const value = normalizeDateKeyInput(rawDate);
   const dateKey = value || getTodayLocalDateKey();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
-    throw new Error("date must be in YYYY-MM-DD format");
+    throw new Error("date must be in YYYY-MM-DD or DD/MM/YYYY format");
   }
   return dateKey;
 }
 
 function parseDateRange(query = {}) {
-  const from = normalizeString(query.from);
-  const to = normalizeString(query.to);
+  const from = normalizeDateKeyInput(query.from);
+  const to = normalizeDateKeyInput(query.to);
 
   const fromKey = from || null;
   const toKey = to || null;
 
   if (fromKey && !/^\d{4}-\d{2}-\d{2}$/.test(fromKey)) {
-    throw new Error("from must be in YYYY-MM-DD format");
+    throw new Error("from must be in YYYY-MM-DD or DD/MM/YYYY format");
   }
 
   if (toKey && !/^\d{4}-\d{2}-\d{2}$/.test(toKey)) {
-    throw new Error("to must be in YYYY-MM-DD format");
+    throw new Error("to must be in YYYY-MM-DD or DD/MM/YYYY format");
   }
 
-  if (fromKey && toKey && fromKey > toKey) {
+  if (fromKey && toKey && compareDateKeys(fromKey, toKey) > 0) {
     throw new Error("from cannot be greater than to");
   }
 
@@ -389,11 +438,11 @@ export async function markMyClassAttendance(teacherId, classId, payload = {}) {
   const todayKey = getTodayLocalDateKey();
   const canEditPastDates = await isTeacherPastAttendanceEnabled();
 
-  if (dateKey > todayKey) {
-    throw new Error(`Attendance cannot be marked for future dates. Today is ${todayKey}`);
+  if (compareDateKeys(dateKey, todayKey) > 0) {
+    throw new Error(`Attendance cannot be marked for future dates. Today is ${formatDisplayDateKey(todayKey)}`);
   }
 
-  if (dateKey < todayKey && !canEditPastDates) {
+  if (compareDateKeys(dateKey, todayKey) < 0 && !canEditPastDates) {
     throw new Error("Past date attendance is locked by admin settings");
   }
 
@@ -632,8 +681,8 @@ export async function getAdminDashboardSummary(query = {}) {
   const requestedDate = normalizeString(query.date);
   const todayKey = getTodayLocalDateKey();
 
-  if (requestedDate && requestedDate !== todayKey) {
-    throw new Error(`Dashboard summary is only available for today (${todayKey})`);
+  if (requestedDate && compareDateKeys(parseDateInputOrToday(requestedDate), todayKey) !== 0) {
+    throw new Error(`Dashboard summary is only available for today (${formatDisplayDateKey(todayKey)})`);
   }
 
   const dateKey = todayKey;
