@@ -381,6 +381,7 @@ async function dispatchAttendanceNotifications({ classRow, dateKey, records, stu
 
   const commonData = {
     type: "attendance_marked",
+    targetTab: "attendance",
     classId: String(classRow?._id || ""),
     className: String(classRow?.name || ""),
     classSection: String(classRow?.section || ""),

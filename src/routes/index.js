@@ -8,6 +8,7 @@ import announcementRoutes from "./v1/announcement.routes.js";
 import attendanceRoutes from "./v1/attendance.routes.js";
 import busRoutes from "./v1/bus.routes.js";
 import videoRoutes from "./v1/video.routes.js";
+import resultRoutes from "./v1/result.routes.js";
 const router = Router();
 
 router.use("/auth", authRoutes);
@@ -19,5 +20,6 @@ router.use("/bus", busRoutes);
 router.use("/announcement", announcementRoutes);
 router.use("/attendance", attendanceRoutes);
 router.use("/video", videoRoutes);
+router.use("/result", resultRoutes);
 
 export default router;
