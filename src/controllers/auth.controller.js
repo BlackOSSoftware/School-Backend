@@ -23,11 +23,12 @@ export async function login(req, res) {
 
 export async function changeAdminPasswordController(req, res) {
   try {
-    await changeAdminPassword(req.user?._id, req.body);
+    const data = await changeAdminPassword(req.user?._id, req.body);
 
     return res.status(200).json({
       success: true,
       message: "Password changed successfully",
+      accessToken: data.accessToken,
     });
   } catch (error) {
     return res.status(400).json({

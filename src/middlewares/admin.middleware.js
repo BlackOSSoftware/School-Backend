@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import User from "../models/User.model.js";
+import { isTokenVersionValid } from "../utils/token-version.js";
 
 export async function adminMiddleware(req, res, next) {
   try {
@@ -13,10 +14,14 @@ export async function adminMiddleware(req, res, next) {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = await User.findById(decoded.id).select("_id name email role status");
+    const user = await User.findById(decoded.id).select("_id name email role status tokenVersion");
 
     if (!user) {
       return res.status(401).json({ message: "User not found" });
+    }
+
+    if (!isTokenVersionValid(decoded, user)) {
+      return res.status(401).json({ message: "Session expired. Please login again." });
     }
 
     if (user.role !== "admin") {

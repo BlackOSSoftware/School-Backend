@@ -180,9 +180,12 @@ export async function changeAdminPassword(adminId, payload = {}) {
   if (!isMatch) throw new Error("Old password is incorrect");
 
   admin.password = newPassword;
+  admin.tokenVersion = Number(admin.tokenVersion ?? 0) + 1;
   await admin.save();
 
-  return { id: admin._id };
+  const accessToken = generateAccessToken(admin);
+
+  return { id: admin._id, accessToken };
 }
 
 export async function changeStudentPassword(studentId, payload = {}) {

@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.model.js";
 import Teacher from "../models/Teacher.model.js";
 import Student from "../models/Student.model.js";
+import { isTokenVersionValid } from "../utils/token-version.js";
 
 export async function authMiddleware(req, res, next) {
   try {
@@ -21,11 +22,15 @@ export async function authMiddleware(req, res, next) {
     } else if (decoded.role === "student") {
       user = await Student.findById(decoded.id).select("_id name role status classId");
     } else {
-      user = await User.findById(decoded.id).select("_id name email role status");
+      user = await User.findById(decoded.id).select("_id name email role status tokenVersion");
     }
 
     if (!user) {
       return res.status(401).json({ message: "User not found" });
+    }
+
+    if (decoded.role === "admin" && !isTokenVersionValid(decoded, user)) {
+      return res.status(401).json({ message: "Session expired. Please login again." });
     }
 
     if (user.status !== "active") {
