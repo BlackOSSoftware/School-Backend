@@ -422,6 +422,11 @@ async function resolveReportDateRange(query = {}) {
     return { fromKey, toKey };
   }
 
+  const activeSession = await getActiveSession();
+  if (activeSession?._id) {
+    return { fromKey: null, toKey: null };
+  }
+
   const todayKey = getTodayUtcDateKey();
   const session = await getSessionByDateKeyOrThrow(todayKey);
 
@@ -429,6 +434,68 @@ async function resolveReportDateRange(query = {}) {
     fromKey: toUtcDateKey(session.startDate),
     toKey: toUtcDateKey(session.endDate),
   };
+}
+
+async function resolveSessionRowForStudentReport(query = {}, student = {}) {
+  const requestedSessionId = normalizeString(query.sessionId);
+
+  if (requestedSessionId) {
+    if (!isValidObjectId(requestedSessionId)) {
+      throw new Error("Invalid session ID");
+    }
+
+    const sessionRow = await Session.findById(requestedSessionId).lean();
+    if (!sessionRow) {
+      throw new Error("Session not found");
+    }
+
+    return {
+      sessionRow,
+      sessionFilter: { sessionId: new mongoose.Types.ObjectId(requestedSessionId) },
+    };
+  }
+
+  const activeSession = await getActiveSession();
+  if (activeSession?._id) {
+    return {
+      sessionRow: activeSession,
+      sessionFilter: { sessionId: activeSession._id },
+    };
+  }
+
+  const studentSessionId = String(student?.sessionId || "");
+  if (!studentSessionId) {
+    return { sessionRow: null, sessionFilter: {} };
+  }
+
+  if (!isValidObjectId(studentSessionId)) {
+    throw new Error("Invalid session ID");
+  }
+
+  const sessionRow = await Session.findById(studentSessionId).lean();
+  if (!sessionRow) {
+    throw new Error("Session not found");
+  }
+
+  return {
+    sessionRow,
+    sessionFilter: { sessionId: new mongoose.Types.ObjectId(studentSessionId) },
+  };
+}
+
+async function resolveReportDateRangeForQuery(query = {}, sessionRow = null) {
+  const { fromKey, toKey } = parseDateRange(query);
+  if (fromKey || toKey) {
+    return { fromKey, toKey };
+  }
+
+  // Session-scoped reports should include all marked dates for that session.
+  // Calendar session endDate can be earlier than real attendance dates.
+  if (sessionRow?._id) {
+    return { fromKey: null, toKey: null };
+  }
+
+  return resolveReportDateRange(query);
 }
 
 export async function markMyClassAttendance(teacherId, classId, payload = {}) {
@@ -829,8 +896,6 @@ export async function updateAdminStudentAttendanceByDate(adminId, classId, stude
 }
 
 export async function getAdminStudentAttendanceReport(classId, studentId, query = {}) {
-  await getClassOrThrow(classId);
-
   if (!isValidObjectId(studentId)) {
     throw new Error("Invalid student ID");
   }
@@ -840,41 +905,80 @@ export async function getAdminStudentAttendanceReport(classId, studentId, query 
     .lean();
 
   if (!student) throw new Error("Student not found");
-  if (String(student.classId) !== String(classId)) {
-    throw new Error("Student does not belong to this class");
-  }
+  if (!student.classId) throw new Error("Student class not assigned");
 
-  const requestedSessionId = normalizeString(query.sessionId);
-  let sessionFilter = {};
-  if (requestedSessionId) {
-    if (!isValidObjectId(requestedSessionId)) {
-      throw new Error("Invalid session ID");
-    }
-    sessionFilter = { sessionId: new mongoose.Types.ObjectId(requestedSessionId) };
-  }
+  const effectiveClassId = student.classId;
+  await getClassOrThrow(effectiveClassId);
 
-  const { fromKey, toKey } = await resolveReportDateRange(query);
-  const dateFilter = buildAttendanceRangeFilter(fromKey, toKey);
+  const { sessionRow, sessionFilter } = await resolveSessionRowForStudentReport(query, student);
+  // Prefer full active-session history. Calendar endDate can lag behind real marked dates.
+  const requestedRange = parseDateRange(query);
+  const hasExplicitRange = Boolean(requestedRange.fromKey || requestedRange.toKey);
+  const { fromKey, toKey } = hasExplicitRange
+    ? requestedRange
+    : { fromKey: null, toKey: null };
+  const dateFilter = hasExplicitRange ? buildAttendanceRangeFilter(fromKey, toKey) : {};
 
-  const attendanceDocs = await Attendance.find({
-    classId,
+  let attendanceDocs = await Attendance.find({
+    classId: effectiveClassId,
     ...sessionFilter,
     ...dateFilter,
   })
-    .select("dateKey records")
+    .select("dateKey records sessionId")
     .sort({ dateKey: 1 })
     .lean();
 
-  const daily = attendanceDocs.map((doc) => {
-    const studentRecord = (doc.records || []).find(
-      (item) => String(item.studentId) === String(student._id)
-    );
+  // If date filter hid valid session marks, fall back to full session history.
+  if (!attendanceDocs.length && Object.keys(sessionFilter).length > 0) {
+    attendanceDocs = await Attendance.find({
+      classId: effectiveClassId,
+      ...sessionFilter,
+    })
+      .select("dateKey records sessionId")
+      .sort({ dateKey: 1 })
+      .lean();
+  }
 
-    return {
-      date: doc.dateKey,
-      status: studentRecord?.status || "absent",
-    };
-  });
+  if (!attendanceDocs.length) {
+    const activeSession = await getActiveSession();
+    if (activeSession?._id) {
+      attendanceDocs = await Attendance.find({
+        classId: effectiveClassId,
+        sessionId: activeSession._id,
+      })
+        .select("dateKey records sessionId")
+        .sort({ dateKey: 1 })
+        .lean();
+    }
+  }
+
+  // Last resort: class attendance for this student across any session.
+  if (!attendanceDocs.length) {
+    attendanceDocs = await Attendance.find({
+      classId: effectiveClassId,
+      "records.studentId": student._id,
+    })
+      .select("dateKey records sessionId")
+      .sort({ dateKey: 1 })
+      .lean();
+  }
+
+  const daily = attendanceDocs
+    .map((doc) => {
+      const studentRecord = (doc.records || []).find(
+        (item) => String(item.studentId) === String(student._id)
+      );
+
+      if (!studentRecord) {
+        return null;
+      }
+
+      return {
+        date: doc.dateKey,
+        status: studentRecord.status,
+      };
+    })
+    .filter(Boolean);
 
   const totalDays = daily.length;
   const presentDays = daily.filter((item) => item.status === "present").length;
@@ -888,6 +992,14 @@ export async function getAdminStudentAttendanceReport(classId, studentId, query 
       classId: student.classId,
       sessionId: student.sessionId,
     },
+    session: sessionRow
+      ? {
+          id: sessionRow._id,
+          name: sessionRow.name,
+          startDate: sessionRow.startDate,
+          endDate: sessionRow.endDate,
+        }
+      : null,
     from: fromKey,
     to: toKey,
     totalDays,
