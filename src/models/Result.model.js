@@ -1,5 +1,14 @@
 import mongoose from "mongoose";
 
+export const EXAM_TYPES = [
+  "Periodic Test",
+  "Term - 1",
+  "Term - 2",
+  "Surprise Test",
+];
+
+export const EXAM_TYPES_NEEDING_MONTH = ["Periodic Test", "Surprise Test"];
+
 const resultSubjectSchema = new mongoose.Schema(
   {
     subject: {
@@ -10,15 +19,23 @@ const resultSubjectSchema = new mongoose.Schema(
     },
     marks: {
       type: Number,
-      required: true,
+      default: 0,
       min: 0,
       max: 999,
+    },
+    outOf: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 1000,
+    },
+    isAbsent: {
+      type: Boolean,
+      default: false,
     },
   },
   { _id: false }
 );
-
-const EXAM_TYPES = ["Monthly Test", "Quarterly Exam", "Half-Yearly Exam", "Annual Exam"];
 
 const resultSchema = new mongoose.Schema(
   {
@@ -91,9 +108,9 @@ const resultSchema = new mongoose.Schema(
 );
 
 resultSchema.pre("validate", function enforceExamRules() {
-  if (this.examType === "Monthly Test") {
+  if (EXAM_TYPES_NEEDING_MONTH.includes(this.examType)) {
     if (!String(this.month || "").trim()) {
-      throw new Error("Month is required for Monthly Test");
+      throw new Error(`Month is required for ${this.examType}`);
     }
   } else {
     this.month = null;
@@ -103,11 +120,11 @@ resultSchema.pre("validate", function enforceExamRules() {
     throw new Error("Out of must be greater than 0");
   }
 
-  const invalidSubject = (this.subjectMarks || []).find(
-    (item) => Number(item?.marks || 0) > Number(this.outOf || 0)
-  );
-  if (invalidSubject) {
-    throw new Error(`Marks for ${invalidSubject.subject} cannot exceed out of value`);
+  for (const item of this.subjectMarks || []) {
+    if (item.isAbsent) continue;
+    if (Number(item.marks || 0) > Number(item.outOf || this.outOf || 0)) {
+      throw new Error(`Marks for ${item.subject} cannot exceed out of value`);
+    }
   }
 });
 

@@ -1,68 +1,50 @@
 import mongoose from "mongoose";
-import ClassModel from "../models/Class.model.js";
-import Result from "../models/Result.model.js";
+import Result, { EXAM_TYPES, EXAM_TYPES_NEEDING_MONTH } from "../models/Result.model.js";
 import Session from "../models/Session.model.js";
 import Student from "../models/Student.model.js";
 import Teacher from "../models/Teacher.model.js";
 import { sendPushNotificationToTokens } from "./notification.service.js";
 
-const EXAM_TYPE_OPTIONS = ["Monthly Test", "Quarterly Exam", "Half-Yearly Exam", "Annual Exam"];
 const MONTH_OPTIONS = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
 ];
 
-function normalizeString(value) {
+function str(value) {
   return String(value || "").trim();
 }
 
-function normalizeEntityId(value, label) {
-  const id = normalizeString(value);
+function entityId(value, label) {
+  const id = str(value);
   if (!id || !mongoose.Types.ObjectId.isValid(id)) {
     throw new Error(`Invalid ${label}`);
   }
   return id;
 }
 
-function normalizeExamKey(value) {
-  return normalizeString(value).toLowerCase().replace(/\s+/g, " ");
+function examKeyOf(examType, month, examTitle) {
+  return str(`${examType}-${month || ""}-${examTitle}`).toLowerCase().replace(/\s+/g, " ");
 }
 
 function normalizeExamType(value) {
-  const examType = normalizeString(value);
-  if (!EXAM_TYPE_OPTIONS.includes(examType)) {
-    throw new Error("Invalid exam type");
-  }
+  const examType = str(value);
+  if (!EXAM_TYPES.includes(examType)) throw new Error("Invalid exam type");
   return examType;
 }
 
 function normalizeMonth(value, examType) {
-  const month = normalizeString(value);
-  if (examType === "Monthly Test") {
-    if (!month) {
-      throw new Error("Month is required for Monthly Test");
-    }
-    if (!MONTH_OPTIONS.includes(month)) {
-      throw new Error("Invalid month");
-    }
+  const month = str(value);
+  if (EXAM_TYPES_NEEDING_MONTH.includes(examType)) {
+    if (!month) throw new Error(`Month is required for ${examType}`);
+    if (!MONTH_OPTIONS.includes(month)) throw new Error("Invalid month");
     return month;
   }
   return null;
 }
 
-function buildDefaultExamTitle(examType, month) {
-  if (examType === "Monthly Test") {
-    return `${month} Monthly Test`;
+function defaultExamTitle(examType, month) {
+  if (EXAM_TYPES_NEEDING_MONTH.includes(examType) && month) {
+    return `${month} ${examType}`;
   }
   return examType;
 }
@@ -72,78 +54,83 @@ function normalizeOutOf(value) {
   if (!Number.isFinite(outOf) || outOf <= 0) {
     throw new Error("Out of is required and must be a valid number");
   }
-  if (outOf > 1000) {
-    throw new Error("Out of cannot exceed 1000");
-  }
+  if (outOf > 1000) throw new Error("Out of cannot exceed 1000");
   return outOf;
 }
 
-function normalizeSubjectMarks(subjectMarks, allowedSubjects = [], outOf = 100) {
+function normalizeSubjectMarks(subjectMarks, allowedSubjects = [], defaultOutOf = 100) {
   const payload = Array.isArray(subjectMarks) ? subjectMarks : [];
-  if (payload.length === 0) {
-    throw new Error("Subject marks are required");
-  }
+  if (!payload.length) throw new Error("Subject marks are required");
 
-  const allowedSubjectSet = new Set(
-    allowedSubjects.map((item) => normalizeString(item).toUpperCase()).filter(Boolean)
+  const allowed = new Set(
+    allowedSubjects
+      .map((item) => str(item).toUpperCase())
+      .filter(Boolean)
+      .filter((item) => item !== "ALL")
   );
 
   const normalized = payload.map((entry, index) => {
-    const subject = normalizeString(entry?.subject).toUpperCase();
-    const rawMarks = entry?.marks;
-    const marks = Number(rawMarks);
+    const subject = str(entry?.subject).toUpperCase();
+    const isAbsent = Boolean(entry?.isAbsent);
+    const outOf = normalizeOutOf(entry?.outOf ?? defaultOutOf);
+    const marks = isAbsent ? 0 : Number(entry?.marks);
 
-    if (!subject) {
-      throw new Error(`Subject name is required at row ${index + 1}`);
-    }
-    if (!Number.isFinite(marks) || marks < 0) {
-      throw new Error(`Valid marks are required for ${subject}`);
-    }
-    if (marks > outOf) {
-      throw new Error(`Marks for ${subject} cannot exceed out of (${outOf})`);
-    }
-    if (allowedSubjectSet.size > 0 && !allowedSubjectSet.has(subject)) {
+    if (!subject) throw new Error(`Subject name is required at row ${index + 1}`);
+    if (allowed.size && !allowed.has(subject)) {
       throw new Error(`${subject} is not part of the class subjects`);
     }
+    if (!isAbsent && (!Number.isFinite(marks) || marks < 0)) {
+      throw new Error(`Valid marks are required for ${subject}`);
+    }
+    if (!isAbsent && marks > outOf) {
+      throw new Error(`Marks for ${subject} cannot exceed out of (${outOf})`);
+    }
 
-    return {
-      subject,
-      marks,
-    };
+    return { subject, marks, outOf, isAbsent };
   });
 
-  const seenSubjects = new Set();
+  const seen = new Set();
   for (const item of normalized) {
-    if (seenSubjects.has(item.subject)) {
-      throw new Error(`Duplicate subject found: ${item.subject}`);
-    }
-    seenSubjects.add(item.subject);
+    if (seen.has(item.subject)) throw new Error(`Duplicate subject found: ${item.subject}`);
+    seen.add(item.subject);
   }
 
-  if (allowedSubjectSet.size > 0) {
-    const missingSubjects = [...allowedSubjectSet].filter(
-      (subject) => !seenSubjects.has(subject)
-    );
-    if (missingSubjects.length > 0) {
-      throw new Error(`Marks are required for all subjects. Missing: ${missingSubjects.join(", ")}`);
+  if (allowed.size) {
+    const missing = [...allowed].filter((subject) => !seen.has(subject));
+    if (missing.length) {
+      throw new Error(`Marks are required for all subjects. Missing: ${missing.join(", ")}`);
     }
   }
 
   return normalized;
 }
 
+function sumTotals(subjectMarks = []) {
+  return subjectMarks.reduce(
+    (acc, item) => {
+      acc.totalOutOf += Number(item.outOf || 0);
+      if (!item.isAbsent) acc.totalMarks += Number(item.marks || 0);
+      return acc;
+    },
+    { totalMarks: 0, totalOutOf: 0 }
+  );
+}
+
 function formatResultRecord(row) {
   if (!row) return null;
 
-  const classInfo = row.classId && typeof row.classId === "object"
-    ? row.classId
-    : null;
-  const studentInfo = row.studentId && typeof row.studentId === "object"
-    ? row.studentId
-    : null;
-  const sessionInfo = row.sessionId && typeof row.sessionId === "object"
-    ? row.sessionId
-    : null;
+  const subjectMarks = (Array.isArray(row.subjectMarks) ? row.subjectMarks : []).map((item) => ({
+    subject: item.subject,
+    marks: item.isAbsent ? null : Number(item.marks ?? 0),
+    outOf: Number(item.outOf ?? row.outOf ?? 0),
+    isAbsent: Boolean(item.isAbsent),
+  }));
+  const { totalMarks, totalOutOf } = sumTotals(
+    subjectMarks.map((item) => ({
+      ...item,
+      marks: item.isAbsent ? 0 : Number(item.marks || 0),
+    }))
+  );
 
   return {
     id: row._id,
@@ -151,12 +138,13 @@ function formatResultRecord(row) {
     examType: row.examType,
     month: row.month || null,
     examKey: row.examKey,
-    totalMarks: row.totalMarks,
+    totalMarks,
+    totalOutOf,
     outOf: row.outOf,
-    subjectMarks: Array.isArray(row.subjectMarks) ? row.subjectMarks : [],
-    class: classInfo,
-    student: studentInfo,
-    session: sessionInfo,
+    subjectMarks,
+    class: row.classId && typeof row.classId === "object" ? row.classId : null,
+    student: row.studentId && typeof row.studentId === "object" ? row.studentId : null,
+    session: row.sessionId && typeof row.sessionId === "object" ? row.sessionId : null,
     submittedByTeacherId: row.submittedByTeacherId,
     updatedByTeacherId: row.updatedByTeacherId,
     createdAt: row.createdAt,
@@ -168,47 +156,30 @@ async function getTeacherWithAssignedClass(teacherId) {
   const teacher = await Teacher.findById(teacherId)
     .populate("classTeacherOf", "name section subjects")
     .lean();
-
-  if (!teacher) {
-    throw new Error("Teacher not found");
-  }
-  if (!teacher.classTeacherOf?._id) {
-    throw new Error("No class is assigned to this teacher");
-  }
-
+  if (!teacher) throw new Error("Teacher not found");
+  if (!teacher.classTeacherOf?._id) throw new Error("No class is assigned to this teacher");
   return teacher;
 }
 
 async function getStudentForTeacherClass(studentId, classId) {
-  const student = await Student.findOne({
-    _id: studentId,
-    classId,
-    status: "active",
-  })
+  const student = await Student.findOne({ _id: studentId, classId, status: "active" })
     .populate("classId", "name section subjects")
     .populate("sessionId", "name startDate endDate isActive")
     .select("name scholarNumber classId sessionId status fcmToken")
     .lean();
-
-  if (!student) {
-    throw new Error("Student not found in your assigned class");
-  }
-
+  if (!student) throw new Error("Student not found in your assigned class");
   return student;
 }
 
 async function resolveSessionId(student = {}) {
-  const studentSessionId = normalizeString(student?.sessionId?._id || student?.sessionId);
-  if (studentSessionId && mongoose.Types.ObjectId.isValid(studentSessionId)) {
-    return studentSessionId;
-  }
-
-  const activeSession = await Session.findOne({ isActive: true }).select("_id").lean();
-  const activeSessionId = normalizeString(activeSession?._id);
-  if (!activeSessionId || !mongoose.Types.ObjectId.isValid(activeSessionId)) {
+  const fromStudent = str(student?.sessionId?._id || student?.sessionId);
+  if (fromStudent && mongoose.Types.ObjectId.isValid(fromStudent)) return fromStudent;
+  const active = await Session.findOne({ isActive: true }).select("_id").lean();
+  const id = str(active?._id);
+  if (!id || !mongoose.Types.ObjectId.isValid(id)) {
     throw new Error("No active session found for result submission");
   }
-  return activeSessionId;
+  return id;
 }
 
 async function assertStudentExists(studentId) {
@@ -217,51 +188,52 @@ async function assertStudentExists(studentId) {
     .populate("sessionId", "name startDate endDate isActive")
     .select("name scholarNumber classId sessionId status fcmToken")
     .lean();
-
-  if (!student) {
-    throw new Error("Student not found");
-  }
-  if (student.status !== "active") {
-    throw new Error("Student account inactive");
-  }
+  if (!student) throw new Error("Student not found");
+  if (student.status !== "active") throw new Error("Student account inactive");
   return student;
 }
 
-async function dispatchResultNotification({ student, classInfo, examTitle, examType, month, totalMarks, outOf, action = "uploaded" }) {
-  const token = normalizeString(student?.fcmToken);
-  if (!token) {
-    return;
-  }
+async function notifyResult({ student, classInfo, examTitle, examType, month, totalMarks, totalOutOf, action = "uploaded" }) {
+  const token = str(student?.fcmToken);
+  if (!token) return;
 
-  const className = normalizeString(classInfo?.name);
-  const classSection = normalizeString(classInfo?.section);
-  const classLabel = [className, classSection].filter(Boolean).join(" ").trim();
-  const examLabel = normalizeString(examTitle) || normalizeString(examType) || "Result";
-  const monthLabel = normalizeString(month);
-  const scoreLabel = Number.isFinite(Number(totalMarks)) && Number.isFinite(Number(outOf))
-    ? `${Number(totalMarks)} / ${Number(outOf)}`
-    : "";
-
-  const bodyParts = [
-    `${examLabel}${monthLabel ? ` (${monthLabel})` : ""} result ${action}.`,
-    classLabel ? `Class: ${classLabel}.` : "",
-    scoreLabel ? `Score: ${scoreLabel}.` : "",
-  ].filter(Boolean);
+  const classLabel = [str(classInfo?.name), str(classInfo?.section)].filter(Boolean).join(" ");
+  const examLabel = str(examTitle) || str(examType) || "Result";
+  const scoreLabel = `${Number(totalMarks)} / ${Number(totalOutOf)}`;
 
   await sendPushNotificationToTokens([token], {
     title: "Result Published",
-    body: bodyParts.join(" "),
+    body: [
+      `${examLabel}${month ? ` (${month})` : ""} result ${action}.`,
+      classLabel ? `Class: ${classLabel}.` : "",
+      `Score: ${scoreLabel}.`,
+    ].filter(Boolean).join(" "),
     data: {
       type: "result_published",
       targetTab: "results",
       examTitle: examLabel,
-      examType: normalizeString(examType),
-      month: monthLabel,
-      className,
-      classSection,
+      examType: str(examType),
+      month: str(month),
+      className: str(classInfo?.name),
+      classSection: str(classInfo?.section),
       score: scoreLabel,
     },
   });
+}
+
+function orderSubjectMarks(normalized, classSubjects) {
+  const order = classSubjects
+    .map((item) => str(item).toUpperCase())
+    .filter(Boolean)
+    .filter((item) => item !== "ALL");
+  return order.map((subject) => normalized.find((item) => item.subject === subject));
+}
+
+function marksheetSubjects(subjects = []) {
+  return (Array.isArray(subjects) ? subjects : [])
+    .map((item) => str(item))
+    .filter(Boolean)
+    .filter((item) => item.toUpperCase() !== "ALL");
 }
 
 async function loadResultsForStudent(studentId) {
@@ -271,111 +243,90 @@ async function loadResultsForStudent(studentId) {
     .populate("studentId", "name scholarNumber")
     .populate("sessionId", "name startDate endDate isActive")
     .lean();
-
   return rows.map(formatResultRecord);
 }
 
-export async function submitTeacherResult(teacherId, payload = {}) {
-  const examType = normalizeExamType(payload.examType);
-  const month = normalizeMonth(payload.month, examType);
-  const autoExamTitle = buildDefaultExamTitle(examType, month);
-  const examTitle = normalizeString(payload.examTitle) || autoExamTitle;
-  const examKey = normalizeExamKey(`${examType}-${month || ""}-${examTitle}`);
-  const outOf = normalizeOutOf(payload.outOf);
-  const studentId = normalizeEntityId(payload.studentId, "student ID");
+function buildResultFields(payload, row, classSubjects, teacherId) {
+  const examType = normalizeExamType(payload.examType ?? row?.examType);
+  const month = normalizeMonth(payload.month ?? row?.month, examType);
+  const examTitle = str(payload.examTitle) || defaultExamTitle(examType, month);
+  const outOf = normalizeOutOf(payload.outOf ?? row?.outOf ?? 100);
+  const subjectSource = Array.isArray(payload.subjectMarks) ? payload.subjectMarks : row?.subjectMarks;
+  const ordered = orderSubjectMarks(
+    normalizeSubjectMarks(subjectSource, classSubjects, outOf),
+    classSubjects
+  );
+  const { totalMarks } = sumTotals(ordered);
 
+  return {
+    examType,
+    month,
+    examTitle,
+    examKey: examKeyOf(examType, month, examTitle),
+    outOf,
+    subjectMarks: ordered,
+    totalMarks,
+    updatedByTeacherId: teacherId,
+  };
+}
+
+export async function submitTeacherResult(teacherId, payload = {}) {
+  const studentId = entityId(payload.studentId, "student ID");
   const teacher = await getTeacherWithAssignedClass(teacherId);
   const assignedClass = teacher.classTeacherOf;
   const classId = String(assignedClass._id);
-  const classSubjects = Array.isArray(assignedClass.subjects) ? assignedClass.subjects : [];
-
-  if (classSubjects.length === 0) {
-    throw new Error("No subjects are configured for this class");
-  }
+  const classSubjects = marksheetSubjects(assignedClass.subjects);
+  if (!classSubjects.length) throw new Error("No subjects are configured for this class");
 
   const student = await getStudentForTeacherClass(studentId, classId);
   const sessionId = await resolveSessionId(student);
+  const fields = buildResultFields(payload, null, classSubjects, teacherId);
 
-  const normalizedSubjectMarks = normalizeSubjectMarks(payload.subjectMarks, classSubjects, outOf);
-  const subjectOrder = classSubjects.map((item) => normalizeString(item).toUpperCase());
-  const orderedSubjectMarks = subjectOrder.map((subject) =>
-    normalizedSubjectMarks.find((item) => item.subject === subject)
-  );
-  const totalMarks = orderedSubjectMarks.reduce((sum, item) => sum + Number(item?.marks || 0), 0);
-
-  const existing = await Result.findOne({
-    studentId,
-    classId,
-    sessionId,
-    examKey,
-  });
-
+  const existing = await Result.findOne({ studentId, classId, sessionId, examKey: fields.examKey });
   if (existing) {
-    existing.examType = examType;
-    existing.month = month;
-    existing.examTitle = examTitle;
-    existing.outOf = outOf;
-    existing.subjectMarks = orderedSubjectMarks;
-    existing.totalMarks = totalMarks;
-    existing.updatedByTeacherId = teacherId;
+    Object.assign(existing, fields);
     await existing.save();
   } else {
     await Result.create({
-      examType,
-      month,
-      examTitle,
-      examKey,
+      ...fields,
       studentId,
       classId,
       sessionId,
-      outOf,
-      subjectMarks: orderedSubjectMarks,
-      totalMarks,
       submittedByTeacherId: teacherId,
-      updatedByTeacherId: teacherId,
     });
   }
 
-  const saved = await Result.findOne({
-    studentId,
-    classId,
-    sessionId,
-    examKey,
-  })
+  const saved = await Result.findOne({ studentId, classId, sessionId, examKey: fields.examKey })
     .populate("classId", "name section subjects")
     .populate("studentId", "name scholarNumber")
     .populate("sessionId", "name startDate endDate isActive")
     .lean();
 
-  await dispatchResultNotification({
+  const formatted = formatResultRecord(saved);
+  await notifyResult({
     student,
     classInfo: assignedClass,
-    examTitle,
-    examType,
-    month,
-    totalMarks,
-    outOf,
+    examTitle: fields.examTitle,
+    examType: fields.examType,
+    month: fields.month,
+    totalMarks: formatted.totalMarks,
+    totalOutOf: formatted.totalOutOf,
     action: existing ? "updated" : "uploaded",
   });
 
-  return formatResultRecord(saved);
+  return formatted;
 }
 
 export async function getTeacherStudentResults(teacherId, studentId) {
-  const normalizedStudentId = normalizeEntityId(studentId, "student ID");
+  const normalizedStudentId = entityId(studentId, "student ID");
   const teacher = await getTeacherWithAssignedClass(teacherId);
-  const classId = String(teacher.classTeacherOf?._id || "");
-  const student = await getStudentForTeacherClass(normalizedStudentId, classId);
-  const data = await loadResultsForStudent(student._id);
-  return data;
+  await getStudentForTeacherClass(normalizedStudentId, String(teacher.classTeacherOf?._id || ""));
+  return loadResultsForStudent(normalizedStudentId);
 }
 
 export async function updateTeacherResult(teacherId, resultId, payload = {}) {
-  const normalizedResultId = normalizeEntityId(resultId, "result ID");
-  const row = await Result.findById(normalizedResultId);
-  if (!row) {
-    throw new Error("Result not found");
-  }
+  const row = await Result.findById(entityId(resultId, "result ID"));
+  if (!row) throw new Error("Result not found");
 
   const teacher = await getTeacherWithAssignedClass(teacherId);
   const assignedClassId = String(teacher.classTeacherOf?._id || "");
@@ -384,28 +335,8 @@ export async function updateTeacherResult(teacherId, resultId, payload = {}) {
   }
 
   const student = await getStudentForTeacherClass(row.studentId, assignedClassId);
-  const classSubjects = Array.isArray(student.classId?.subjects) ? student.classId.subjects : [];
-  const examType = normalizeExamType(payload.examType ?? row.examType);
-  const month = normalizeMonth(payload.month ?? row.month, examType);
-  const autoExamTitle = buildDefaultExamTitle(examType, month);
-  const examTitle = normalizeString(payload.examTitle) || autoExamTitle;
-  const outOf = normalizeOutOf(payload.outOf ?? row.outOf);
-  const subjectMarksPayload = Array.isArray(payload.subjectMarks) ? payload.subjectMarks : row.subjectMarks;
-  const normalizedSubjectMarks = normalizeSubjectMarks(subjectMarksPayload, classSubjects, outOf);
-  const subjectOrder = classSubjects.map((item) => normalizeString(item).toUpperCase());
-  const orderedSubjectMarks = subjectOrder.map((subject) =>
-    normalizedSubjectMarks.find((item) => item.subject === subject)
-  );
-  const totalMarks = orderedSubjectMarks.reduce((sum, item) => sum + Number(item?.marks || 0), 0);
-
-  row.examType = examType;
-  row.month = month;
-  row.examTitle = examTitle;
-  row.examKey = normalizeExamKey(`${examType}-${month || ""}-${examTitle}`);
-  row.outOf = outOf;
-  row.subjectMarks = orderedSubjectMarks;
-  row.totalMarks = totalMarks;
-  row.updatedByTeacherId = teacherId;
+  const classSubjects = marksheetSubjects(student.classId?.subjects);
+  Object.assign(row, buildResultFields(payload, row, classSubjects, teacherId));
   await row.save();
 
   const saved = await Result.findById(row._id)
@@ -414,50 +345,42 @@ export async function updateTeacherResult(teacherId, resultId, payload = {}) {
     .populate("sessionId", "name startDate endDate isActive")
     .lean();
 
-  await dispatchResultNotification({
+  const formatted = formatResultRecord(saved);
+  await notifyResult({
     student,
     classInfo: student?.classId,
     examTitle: row.examTitle,
     examType: row.examType,
     month: row.month,
-    totalMarks: row.totalMarks,
-    outOf: row.outOf,
+    totalMarks: formatted.totalMarks,
+    totalOutOf: formatted.totalOutOf,
     action: "updated",
   });
+  return formatted;
+}
 
-  return formatResultRecord(saved);
+export async function deleteTeacherResult(teacherId, resultId) {
+  const row = await Result.findById(entityId(resultId, "result ID"));
+  if (!row) throw new Error("Result not found");
+
+  const teacher = await getTeacherWithAssignedClass(teacherId);
+  if (String(row.classId) !== String(teacher.classTeacherOf?._id || "")) {
+    throw new Error("You can delete results of your assigned class only");
+  }
+
+  await Result.deleteOne({ _id: row._id });
+  return { id: String(row._id) };
 }
 
 export async function updateAdminResult(adminId, resultId, payload = {}) {
-  normalizeEntityId(adminId, "admin ID");
-  const normalizedResultId = normalizeEntityId(resultId, "result ID");
-  const row = await Result.findById(normalizedResultId);
-  if (!row) {
-    throw new Error("Result not found");
-  }
+  entityId(adminId, "admin ID");
+  const row = await Result.findById(entityId(resultId, "result ID"));
+  if (!row) throw new Error("Result not found");
 
   const student = await assertStudentExists(row.studentId);
-  const classSubjects = Array.isArray(student.classId?.subjects) ? student.classId.subjects : [];
-  const examType = normalizeExamType(payload.examType ?? row.examType);
-  const month = normalizeMonth(payload.month ?? row.month, examType);
-  const autoExamTitle = buildDefaultExamTitle(examType, month);
-  const examTitle = normalizeString(payload.examTitle) || autoExamTitle;
-  const outOf = normalizeOutOf(payload.outOf ?? row.outOf);
-  const subjectMarksPayload = Array.isArray(payload.subjectMarks) ? payload.subjectMarks : row.subjectMarks;
-  const normalizedSubjectMarks = normalizeSubjectMarks(subjectMarksPayload, classSubjects, outOf);
-  const subjectOrder = classSubjects.map((item) => normalizeString(item).toUpperCase());
-  const orderedSubjectMarks = subjectOrder.map((subject) =>
-    normalizedSubjectMarks.find((item) => item.subject === subject)
-  );
-  const totalMarks = orderedSubjectMarks.reduce((sum, item) => sum + Number(item?.marks || 0), 0);
-
-  row.examType = examType;
-  row.month = month;
-  row.examTitle = examTitle;
-  row.examKey = normalizeExamKey(`${examType}-${month || ""}-${examTitle}`);
-  row.outOf = outOf;
-  row.subjectMarks = orderedSubjectMarks;
-  row.totalMarks = totalMarks;
+  const classSubjects = marksheetSubjects(student.classId?.subjects);
+  const fields = buildResultFields(payload, row, classSubjects, row.updatedByTeacherId);
+  Object.assign(row, fields);
   await row.save();
 
   const saved = await Result.findById(row._id)
@@ -466,32 +389,35 @@ export async function updateAdminResult(adminId, resultId, payload = {}) {
     .populate("sessionId", "name startDate endDate isActive")
     .lean();
 
-  await dispatchResultNotification({
+  const formatted = formatResultRecord(saved);
+  await notifyResult({
     student,
     classInfo: student?.classId,
     examTitle: row.examTitle,
     examType: row.examType,
     month: row.month,
-    totalMarks: row.totalMarks,
-    outOf: row.outOf,
+    totalMarks: formatted.totalMarks,
+    totalOutOf: formatted.totalOutOf,
     action: "updated",
   });
+  return formatted;
+}
 
-  return formatResultRecord(saved);
+export async function deleteAdminResult(adminId, resultId) {
+  entityId(adminId, "admin ID");
+  const row = await Result.findById(entityId(resultId, "result ID"));
+  if (!row) throw new Error("Result not found");
+  await Result.deleteOne({ _id: row._id });
+  return { id: String(row._id) };
 }
 
 export async function getStudentResults(studentId) {
-  normalizeEntityId(studentId, "student ID");
-
+  entityId(studentId, "student ID");
   const student = await Student.findById(studentId).select("_id");
-  if (!student) {
-    throw new Error("Student not found");
-  }
-
+  if (!student) throw new Error("Student not found");
   return loadResultsForStudent(studentId);
 }
 
 export async function getAdminStudentResults(studentId) {
-  const normalizedStudentId = normalizeEntityId(studentId, "student ID");
-  return getStudentResults(normalizedStudentId);
+  return getStudentResults(entityId(studentId, "student ID"));
 }
