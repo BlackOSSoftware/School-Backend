@@ -23,6 +23,20 @@ const appSettingSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    allowTeacherHolidayMark: {
+      type: Boolean,
+      default: false,
+    },
+    allowTeacherHolidayMarkUpdatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    allowTeacherHolidayMarkUpdatedByName: {
+      type: String,
+      trim: true,
+      default: "",
+    },
   },
   { timestamps: true }
 );

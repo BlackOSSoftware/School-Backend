@@ -3,8 +3,10 @@ import {
   deleteAdminResultController,
   deleteTeacherResultController,
   getAdminStudentResultsController,
+  getClassResultLiveStatusController,
   getMyStudentResultsController,
   getTeacherStudentResultsController,
+  goLiveClassResultsController,
   submitTeacherResultController,
   updateAdminResultController,
   updateTeacherResultController,
@@ -21,6 +23,8 @@ router.put("/teacher/:resultId", teacherMiddleware, updateTeacherResultControlle
 router.delete("/teacher/:resultId", teacherMiddleware, deleteTeacherResultController);
 router.get("/student/me", studentMiddleware, getMyStudentResultsController);
 router.get("/admin/student/:studentId", adminMiddleware, getAdminStudentResultsController);
+router.get("/admin/class/:classId/live-status", adminMiddleware, getClassResultLiveStatusController);
+router.post("/admin/go-live", adminMiddleware, goLiveClassResultsController);
 router.put("/admin/:resultId", adminMiddleware, updateAdminResultController);
 router.delete("/admin/:resultId", adminMiddleware, deleteAdminResultController);
 

@@ -2,8 +2,10 @@ import {
   deleteAdminResult,
   deleteTeacherResult,
   getAdminStudentResults,
+  getClassResultLiveStatus,
   getStudentResults,
   getTeacherStudentResults,
+  goLiveClassResults,
   submitTeacherResult,
   updateAdminResult,
   updateTeacherResult,
@@ -85,5 +87,30 @@ export async function deleteAdminResultController(req, res) {
     return res.status(200).json({ success: true, message: "Result deleted successfully", data });
   } catch (error) {
     return fail(res, error, "Unable to delete result");
+  }
+}
+
+export async function getClassResultLiveStatusController(req, res) {
+  try {
+    const data = await getClassResultLiveStatus(req.params.classId);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return fail(res, error, "Unable to fetch class result status");
+  }
+}
+
+export async function goLiveClassResultsController(req, res) {
+  try {
+    const classId = req.body?.classId || req.params.classId;
+    const data = await goLiveClassResults(req.user?._id, classId);
+    return res.status(200).json({
+      success: true,
+      message: data.updated
+        ? `${data.updated} result(s) are now live for students`
+        : "No pending results to go live",
+      data,
+    });
+  } catch (error) {
+    return fail(res, error, "Unable to go live class results");
   }
 }

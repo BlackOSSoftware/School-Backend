@@ -6,6 +6,7 @@ import ClassModel from "../models/Class.model.js";
 import Session from "../models/Session.model.js";
 import User from "../models/User.model.js";
 import AppSetting from "../models/AppSetting.model.js";
+import Holiday from "../models/Holiday.model.js";
 import { sendPushNotificationToTokens } from "./notification.service.js";
 
 function normalizeString(value) {
@@ -144,6 +145,7 @@ async function getGlobalAppSetting() {
       $setOnInsert: {
         key: "global",
         teacherPastAttendanceEnabled: false,
+        allowTeacherHolidayMark: false,
       },
     },
     {
@@ -157,6 +159,21 @@ async function getGlobalAppSetting() {
 async function isTeacherPastAttendanceEnabled() {
   const settings = await getGlobalAppSetting();
   return Boolean(settings?.teacherPastAttendanceEnabled);
+}
+
+async function isTeacherHolidayMarkEnabled() {
+  const settings = await getGlobalAppSetting();
+  return Boolean(settings?.allowTeacherHolidayMark);
+}
+
+function formatTeacherAttendancePolicy(settings) {
+  return {
+    canMarkPastDates: Boolean(settings?.teacherPastAttendanceEnabled),
+    allowTeacherHolidayMark: Boolean(settings?.allowTeacherHolidayMark),
+    updatedAt: settings?.updatedAt || null,
+    updatedByName: String(settings?.teacherPastAttendanceUpdatedByName || "").trim(),
+    holidayUpdatedByName: String(settings?.allowTeacherHolidayMarkUpdatedByName || "").trim(),
+  };
 }
 
 async function getClassOrThrow(classId) {
@@ -269,8 +286,9 @@ async function getStudentsByClassSession(classId, sessionId) {
     .lean();
 }
 
-function buildClassAttendanceResponse(classRow, attendanceDoc, students) {
-  const records = attendanceDoc?.records || [];
+function buildClassAttendanceResponse(classRow, attendanceDoc, students, holidayDoc = null) {
+  const isHoliday = Boolean(holidayDoc);
+  const records = isHoliday ? [] : attendanceDoc?.records || [];
   const presentStudents = records.filter((item) => item.status === "present");
   const absentStudents = records.filter((item) => item.status === "absent");
   const statusByStudentId = new Map(records.map((item) => [String(item.studentId), item.status]));
@@ -278,7 +296,7 @@ function buildClassAttendanceResponse(classRow, attendanceDoc, students) {
     studentId: student._id,
     studentName: student.name,
     scholarNumber: student.scholarNumber,
-    status: statusByStudentId.get(String(student._id)) || "not_marked",
+    status: isHoliday ? "holiday" : statusByStudentId.get(String(student._id)) || "not_marked",
   }));
 
   const totalStudents = students.length || records.length;
@@ -291,8 +309,9 @@ function buildClassAttendanceResponse(classRow, attendanceDoc, students) {
       name: classRow.name,
       section: classRow.section,
     },
-    attendanceTaken: Boolean(attendanceDoc),
-    date: attendanceDoc?.dateKey || null,
+    isHoliday,
+    attendanceTaken: isHoliday ? false : Boolean(attendanceDoc),
+    date: holidayDoc?.dateKey || attendanceDoc?.dateKey || null,
     presentCount,
     absentCount,
     totalStudents,
@@ -515,6 +534,11 @@ export async function markMyClassAttendance(teacherId, classId, payload = {}) {
   }
 
   const session = await resolveSessionForClassAttendance(dateKey);
+  const holiday = await Holiday.findOne({ classId, sessionId: session._id, dateKey }).lean();
+  if (holiday) {
+    throw new Error("This day is marked as holiday. Remove holiday first to mark attendance");
+  }
+
   const students = await getStudentsByClassSession(classId, session._id);
 
   if (students.length === 0) {
@@ -556,12 +580,7 @@ export async function markMyClassAttendance(teacherId, classId, payload = {}) {
 
 export async function getTeacherAttendancePolicy() {
   const settings = await getGlobalAppSetting();
-
-  return {
-    canMarkPastDates: Boolean(settings?.teacherPastAttendanceEnabled),
-    updatedAt: settings?.updatedAt || null,
-    updatedByName: String(settings?.teacherPastAttendanceUpdatedByName || "").trim(),
-  };
+  return formatTeacherAttendancePolicy(settings);
 }
 
 export async function updateTeacherAttendancePolicy(adminId, payload = {}) {
@@ -576,18 +595,28 @@ export async function updateTeacherAttendancePolicy(adminId, payload = {}) {
     throw new Error("Account inactive");
   }
 
-  if (typeof payload?.canMarkPastDates !== "boolean") {
-    throw new Error("canMarkPastDates must be true or false");
+  const hasPast = typeof payload?.canMarkPastDates === "boolean";
+  const hasHoliday = typeof payload?.allowTeacherHolidayMark === "boolean";
+  if (!hasPast && !hasHoliday) {
+    throw new Error("Provide canMarkPastDates or allowTeacherHolidayMark");
+  }
+
+  const $set = {};
+  if (hasPast) {
+    $set.teacherPastAttendanceEnabled = payload.canMarkPastDates;
+    $set.teacherPastAttendanceUpdatedBy = admin._id;
+    $set.teacherPastAttendanceUpdatedByName = admin.name || "Admin";
+  }
+  if (hasHoliday) {
+    $set.allowTeacherHolidayMark = payload.allowTeacherHolidayMark;
+    $set.allowTeacherHolidayMarkUpdatedBy = admin._id;
+    $set.allowTeacherHolidayMarkUpdatedByName = admin.name || "Admin";
   }
 
   const settings = await AppSetting.findOneAndUpdate(
     { key: "global" },
     {
-      $set: {
-        teacherPastAttendanceEnabled: payload.canMarkPastDates,
-        teacherPastAttendanceUpdatedBy: admin._id,
-        teacherPastAttendanceUpdatedByName: admin.name || "Admin",
-      },
+      $set,
       $setOnInsert: {
         key: "global",
       },
@@ -599,11 +628,7 @@ export async function updateTeacherAttendancePolicy(adminId, payload = {}) {
     }
   ).lean();
 
-  return {
-    canMarkPastDates: Boolean(settings?.teacherPastAttendanceEnabled),
-    updatedAt: settings?.updatedAt || null,
-    updatedByName: String(settings?.teacherPastAttendanceUpdatedByName || "").trim(),
-  };
+  return formatTeacherAttendancePolicy(settings);
 }
 
 export async function getMyClassAttendanceByDate(teacherId, classId, query = {}) {
@@ -613,12 +638,68 @@ export async function getMyClassAttendanceByDate(teacherId, classId, query = {})
   const dateKey = parseDateInputOrToday(query.date);
   const session = await resolveSessionForClassAttendance(dateKey);
 
-  const [attendance, students] = await Promise.all([
+  const [attendance, holiday, students] = await Promise.all([
     Attendance.findOne({ classId, sessionId: session._id, dateKey }).lean(),
+    Holiday.findOne({ classId, sessionId: session._id, dateKey }).lean(),
     getStudentsByClassSession(classId, session._id),
   ]);
 
-  return buildClassAttendanceResponse(classRow, attendance, students);
+  return buildClassAttendanceResponse(classRow, attendance, students, holiday);
+}
+
+export async function markMyClassHoliday(teacherId, classId, payload = {}) {
+  const teacher = await getTeacherClassAuthOrThrow(teacherId, classId);
+  const classRow = await getClassOrThrow(classId);
+
+  if (!(await isTeacherHolidayMarkEnabled())) {
+    throw new Error("Holiday marking is locked by admin settings");
+  }
+
+  const dateKey = parseDateInputOrToday(payload.date);
+  const todayKey = getTodayLocalDateKey();
+  if (compareDateKeys(dateKey, todayKey) > 0) {
+    throw new Error(`Holiday cannot be marked for future dates. Today is ${formatDisplayDateKey(todayKey)}`);
+  }
+
+  const session = await resolveSessionForClassAttendance(dateKey);
+  const students = await getStudentsByClassSession(classId, session._id);
+
+  const holiday = await Holiday.findOneAndUpdate(
+    { classId, sessionId: session._id, dateKey },
+    {
+      $set: {
+        classId,
+        sessionId: session._id,
+        date: dateKeyToUtcDate(dateKey),
+        dateKey,
+        markedBy: teacherId,
+        markedByName: teacher?.name || "",
+      },
+    },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  ).lean();
+
+  await Attendance.deleteOne({ classId, sessionId: session._id, dateKey });
+  return buildClassAttendanceResponse(classRow, null, students, holiday);
+}
+
+export async function unmarkMyClassHoliday(teacherId, classId, query = {}) {
+  await getTeacherClassAuthOrThrow(teacherId, classId);
+  const classRow = await getClassOrThrow(classId);
+
+  if (!(await isTeacherHolidayMarkEnabled())) {
+    throw new Error("Holiday marking is locked by admin settings");
+  }
+
+  const dateKey = parseDateInputOrToday(query.date);
+  const session = await resolveSessionForClassAttendance(dateKey);
+  const deleted = await Holiday.findOneAndDelete({ classId, sessionId: session._id, dateKey }).lean();
+  if (!deleted) {
+    throw new Error("No holiday found for selected date");
+  }
+
+  const students = await getStudentsByClassSession(classId, session._id);
+  return buildClassAttendanceResponse(classRow, null, students, null);
 }
 
 export async function getMyStudentAttendanceReport(teacherId, classId, studentId, query = {}) {
@@ -795,8 +876,9 @@ export async function getAdminClassAttendanceByDate(classId, query = {}) {
   // Otherwise summary can show counts while detail resolves another session and returns 0/0/0.
   const session = await resolveSummarySessionOrThrow(query, dateKey);
 
-  let [attendance, students] = await Promise.all([
+  let [attendance, holiday, students] = await Promise.all([
     Attendance.findOne({ classId, sessionId: session._id, dateKey }).lean(),
+    Holiday.findOne({ classId, sessionId: session._id, dateKey }).lean(),
     getStudentsByClassSession(classId, session._id),
   ]);
 
@@ -804,7 +886,7 @@ export async function getAdminClassAttendanceByDate(classId, query = {}) {
   // In some environments class summary can reflect attendance from a different
   // resolved session for the same date. If that happens, return the most recent
   // attendance for this class/date so admin modal still shows actual student list.
-  if (!attendance) {
+  if (!attendance && !holiday) {
     const fallbackAttendance = await Attendance.findOne({ classId, dateKey })
       .sort({ updatedAt: -1, createdAt: -1 })
       .lean();
@@ -815,7 +897,11 @@ export async function getAdminClassAttendanceByDate(classId, query = {}) {
     }
   }
 
-  return buildClassAttendanceResponse(classRow, attendance, students);
+  if (!holiday) {
+    holiday = await Holiday.findOne({ classId, dateKey }).sort({ updatedAt: -1, createdAt: -1 }).lean();
+  }
+
+  return buildClassAttendanceResponse(classRow, attendance, students, holiday);
 }
 
 export async function updateAdminStudentAttendanceByDate(adminId, classId, studentId, payload = {}) {
@@ -1024,28 +1110,47 @@ export async function getStudentMyAttendanceReport(studentId, query = {}) {
   const { fromKey, toKey } = await resolveReportDateRange(query);
   const dateFilter = buildAttendanceRangeFilter(fromKey, toKey);
 
-  const attendanceDocs = await Attendance.find({
-    classId: student.classId,
-    ...dateFilter,
-  })
-    .select("dateKey records")
-    .sort({ dateKey: 1 })
-    .lean();
+  const [attendanceDocs, holidayDocs] = await Promise.all([
+    Attendance.find({
+      classId: student.classId,
+      ...dateFilter,
+    })
+      .select("dateKey records")
+      .sort({ dateKey: 1 })
+      .lean(),
+    Holiday.find({
+      classId: student.classId,
+      ...dateFilter,
+    })
+      .select("dateKey")
+      .lean(),
+  ]);
 
-  const daily = attendanceDocs.map((doc) => {
-    const studentRecord = (doc.records || []).find(
+  const holidayKeys = new Set(holidayDocs.map((item) => item.dateKey));
+  const attendanceByDate = new Map(attendanceDocs.map((doc) => [doc.dateKey, doc]));
+  const dateKeys = [...new Set([...attendanceByDate.keys(), ...holidayKeys])].sort();
+
+  const daily = dateKeys.map((dateKey) => {
+    if (holidayKeys.has(dateKey)) {
+      return { date: dateKey, status: "holiday" };
+    }
+
+    const doc = attendanceByDate.get(dateKey);
+    const studentRecord = (doc?.records || []).find(
       (item) => String(item.studentId) === String(student._id)
     );
 
     return {
-      date: doc.dateKey,
+      date: dateKey,
       status: studentRecord?.status || "absent",
     };
   });
 
-  const totalDays = daily.length;
-  const presentDays = daily.filter((item) => item.status === "present").length;
+  const countedDays = daily.filter((item) => item.status !== "holiday");
+  const totalDays = countedDays.length;
+  const presentDays = countedDays.filter((item) => item.status === "present").length;
   const absentDays = totalDays - presentDays;
+  const holidayDays = daily.filter((item) => item.status === "holiday").length;
 
   return {
     student: {
@@ -1060,6 +1165,7 @@ export async function getStudentMyAttendanceReport(studentId, query = {}) {
     totalDays,
     presentDays,
     absentDays,
+    holidayDays,
     presentPercentage: calculatePercentage(presentDays, totalDays),
     daily,
   };

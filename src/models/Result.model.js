@@ -103,6 +103,15 @@ const resultSchema = new mongoose.Schema(
       ref: "Teacher",
       required: true,
     },
+    isLive: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    liveAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );

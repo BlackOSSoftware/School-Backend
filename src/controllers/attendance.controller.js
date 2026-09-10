@@ -10,6 +10,8 @@ import {
   updateTeacherAttendancePolicy,
   updateAdminStudentAttendanceByDate,
   markMyClassAttendance,
+  markMyClassHoliday,
+  unmarkMyClassHoliday,
 } from "../services/attendance.service.js";
 
 export async function markMyClassAttendanceController(req, res) {
@@ -25,6 +27,38 @@ export async function markMyClassAttendanceController(req, res) {
     return res.status(400).json({
       success: false,
       message: error.message || "Failed to save attendance",
+    });
+  }
+}
+
+export async function markMyClassHolidayController(req, res) {
+  try {
+    const result = await markMyClassHoliday(req.user?._id, req.params.classId, req.body);
+    return res.status(200).json({
+      success: true,
+      message: "Day marked as holiday. Attendance for this date was cleared.",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Failed to mark holiday",
+    });
+  }
+}
+
+export async function unmarkMyClassHolidayController(req, res) {
+  try {
+    const result = await unmarkMyClassHoliday(req.user?._id, req.params.classId, req.query);
+    return res.status(200).json({
+      success: true,
+      message: "Holiday removed successfully",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Failed to remove holiday",
     });
   }
 }

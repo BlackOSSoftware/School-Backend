@@ -11,6 +11,8 @@ import {
   updateTeacherAttendancePolicyController,
   updateAdminStudentAttendanceByDateController,
   markMyClassAttendanceController,
+  markMyClassHolidayController,
+  unmarkMyClassHolidayController,
 } from "../../controllers/attendance.controller.js";
 import { adminMiddleware } from "../../middlewares/admin.middleware.js";
 import { teacherMiddleware } from "../../middlewares/teacher.middleware.js";
@@ -19,6 +21,8 @@ import { studentMiddleware } from "../../middlewares/student.middleware.js";
 const router = Router();
 
 router.put("/teacher/class/:classId/mark", teacherMiddleware, markMyClassAttendanceController);
+router.put("/teacher/class/:classId/holiday", teacherMiddleware, markMyClassHolidayController);
+router.delete("/teacher/class/:classId/holiday", teacherMiddleware, unmarkMyClassHolidayController);
 router.get("/teacher/class/:classId/date", teacherMiddleware, getMyClassAttendanceByDateController);
 router.get("/teacher/policy", teacherMiddleware, getTeacherAttendancePolicyController);
 router.get(

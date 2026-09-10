@@ -147,9 +147,21 @@ function formatResultRecord(row) {
     session: row.sessionId && typeof row.sessionId === "object" ? row.sessionId : null,
     submittedByTeacherId: row.submittedByTeacherId,
     updatedByTeacherId: row.updatedByTeacherId,
+    isLive: Boolean(row.isLive),
+    liveAt: row.liveAt || null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+let liveBackfillDone = false;
+async function ensureLegacyResultsLive() {
+  if (liveBackfillDone) return;
+  await Result.updateMany(
+    { $or: [{ isLive: { $exists: false } }, { isLive: null }] },
+    { $set: { isLive: true } }
+  );
+  liveBackfillDone = true;
 }
 
 async function getTeacherWithAssignedClass(teacherId) {
@@ -236,8 +248,12 @@ function marksheetSubjects(subjects = []) {
     .filter((item) => item.toUpperCase() !== "ALL");
 }
 
-async function loadResultsForStudent(studentId) {
-  const rows = await Result.find({ studentId })
+async function loadResultsForStudent(studentId, { liveOnly = false } = {}) {
+  await ensureLegacyResultsLive();
+  const filter = { studentId };
+  if (liveOnly) filter.isLive = true;
+
+  const rows = await Result.find(filter)
     .sort({ updatedAt: -1, createdAt: -1 })
     .populate("classId", "name section subjects")
     .populate("studentId", "name scholarNumber")
@@ -293,6 +309,7 @@ export async function submitTeacherResult(teacherId, payload = {}) {
       classId,
       sessionId,
       submittedByTeacherId: teacherId,
+      isLive: false,
     });
   }
 
@@ -303,16 +320,18 @@ export async function submitTeacherResult(teacherId, payload = {}) {
     .lean();
 
   const formatted = formatResultRecord(saved);
-  await notifyResult({
-    student,
-    classInfo: assignedClass,
-    examTitle: fields.examTitle,
-    examType: fields.examType,
-    month: fields.month,
-    totalMarks: formatted.totalMarks,
-    totalOutOf: formatted.totalOutOf,
-    action: existing ? "updated" : "uploaded",
-  });
+  if (formatted.isLive) {
+    await notifyResult({
+      student,
+      classInfo: assignedClass,
+      examTitle: fields.examTitle,
+      examType: fields.examType,
+      month: fields.month,
+      totalMarks: formatted.totalMarks,
+      totalOutOf: formatted.totalOutOf,
+      action: existing ? "updated" : "uploaded",
+    });
+  }
 
   return formatted;
 }
@@ -346,16 +365,18 @@ export async function updateTeacherResult(teacherId, resultId, payload = {}) {
     .lean();
 
   const formatted = formatResultRecord(saved);
-  await notifyResult({
-    student,
-    classInfo: student?.classId,
-    examTitle: row.examTitle,
-    examType: row.examType,
-    month: row.month,
-    totalMarks: formatted.totalMarks,
-    totalOutOf: formatted.totalOutOf,
-    action: "updated",
-  });
+  if (formatted.isLive) {
+    await notifyResult({
+      student,
+      classInfo: student?.classId,
+      examTitle: row.examTitle,
+      examType: row.examType,
+      month: row.month,
+      totalMarks: formatted.totalMarks,
+      totalOutOf: formatted.totalOutOf,
+      action: "updated",
+    });
+  }
   return formatted;
 }
 
@@ -390,16 +411,18 @@ export async function updateAdminResult(adminId, resultId, payload = {}) {
     .lean();
 
   const formatted = formatResultRecord(saved);
-  await notifyResult({
-    student,
-    classInfo: student?.classId,
-    examTitle: row.examTitle,
-    examType: row.examType,
-    month: row.month,
-    totalMarks: formatted.totalMarks,
-    totalOutOf: formatted.totalOutOf,
-    action: "updated",
-  });
+  if (formatted.isLive) {
+    await notifyResult({
+      student,
+      classInfo: student?.classId,
+      examTitle: row.examTitle,
+      examType: row.examType,
+      month: row.month,
+      totalMarks: formatted.totalMarks,
+      totalOutOf: formatted.totalOutOf,
+      action: "updated",
+    });
+  }
   return formatted;
 }
 
@@ -415,9 +438,67 @@ export async function getStudentResults(studentId) {
   entityId(studentId, "student ID");
   const student = await Student.findById(studentId).select("_id");
   if (!student) throw new Error("Student not found");
-  return loadResultsForStudent(studentId);
+  return loadResultsForStudent(studentId, { liveOnly: true });
 }
 
 export async function getAdminStudentResults(studentId) {
-  return getStudentResults(entityId(studentId, "student ID"));
+  entityId(studentId, "student ID");
+  const student = await Student.findById(studentId).select("_id");
+  if (!student) throw new Error("Student not found");
+  return loadResultsForStudent(studentId, { liveOnly: false });
+}
+
+export async function getClassResultLiveStatus(classId) {
+  await ensureLegacyResultsLive();
+  const normalizedClassId = entityId(classId, "class ID");
+  const [pending, live] = await Promise.all([
+    Result.countDocuments({ classId: normalizedClassId, isLive: false }),
+    Result.countDocuments({ classId: normalizedClassId, isLive: true }),
+  ]);
+  return { classId: normalizedClassId, pending, live };
+}
+
+export async function goLiveClassResults(adminId, classId) {
+  entityId(adminId, "admin ID");
+  await ensureLegacyResultsLive();
+  const normalizedClassId = entityId(classId, "class ID");
+
+  const pending = await Result.find({ classId: normalizedClassId, isLive: false })
+    .populate("studentId", "name fcmToken")
+    .populate("classId", "name section")
+    .lean();
+
+  if (!pending.length) {
+    return { classId: normalizedClassId, updated: 0, pending: 0, live: await Result.countDocuments({ classId: normalizedClassId, isLive: true }) };
+  }
+
+  const now = new Date();
+  await Result.updateMany(
+    { classId: normalizedClassId, isLive: false },
+    { $set: { isLive: true, liveAt: now } }
+  );
+
+  const notified = new Set();
+  for (const row of pending) {
+    const studentKey = String(row.studentId?._id || row.studentId || "");
+    if (!studentKey || notified.has(studentKey)) continue;
+    notified.add(studentKey);
+    await notifyResult({
+      student: row.studentId,
+      classInfo: row.classId,
+      examTitle: row.examTitle,
+      examType: row.examType,
+      month: row.month,
+      totalMarks: row.totalMarks,
+      totalOutOf: sumTotals(row.subjectMarks || []).totalOutOf || row.outOf,
+      action: "published",
+    });
+  }
+
+  return {
+    classId: normalizedClassId,
+    updated: pending.length,
+    pending: 0,
+    live: await Result.countDocuments({ classId: normalizedClassId, isLive: true }),
+  };
 }

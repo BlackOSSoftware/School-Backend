@@ -40,15 +40,15 @@ async function releaseFcmTokenFromOtherAccounts(rawFcmToken, owner = {}) {
 async function saveFcmTokenOnLogin(user, rawFcmToken) {
   const role = String(user?.role || "").toLowerCase();
   const normalizedFcmToken = normalizeFcmToken(rawFcmToken);
-  const requiresFcmToken = ["teacher", "student"].includes(role);
 
-  if (requiresFcmToken && !normalizedFcmToken) {
-    throw new Error("fcmToken is required for teacher and student login");
+  // Do not block login when FCM is temporarily unavailable (common on shared devices after logout).
+  if (!normalizedFcmToken) {
+    return;
   }
 
   await releaseFcmTokenFromOtherAccounts(normalizedFcmToken, { id: user?._id, role });
 
-  if (normalizedFcmToken && user.fcmToken !== normalizedFcmToken) {
+  if (user.fcmToken !== normalizedFcmToken) {
     user.fcmToken = normalizedFcmToken;
     await user.save();
   }
