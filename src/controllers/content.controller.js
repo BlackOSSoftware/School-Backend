@@ -3,8 +3,13 @@ import path from "node:path";
 import Content from "../models/Content.model.js";
 import {
   createContentByTeacher,
+  deleteHomeworkByAdmin,
+  deleteHomeworkByTeacher,
+  getAdminHomeworkList,
   getStudentContentList,
   getTeacherContentList,
+  updateHomeworkByAdmin,
+  updateHomeworkByTeacher,
 } from "../services/content.service.js";
 
 function pickTypeFromRequest(req) {
@@ -24,6 +29,10 @@ function buildTeacherDownloadUrl(req, contentId) {
 
 function buildStudentDownloadUrl(req, contentId) {
   return toAbsoluteUrl(req, `/api/v1/student/me/content/download/${contentId}?mode=download`);
+}
+
+function buildAdminHomeworkDownloadUrl(req, contentId) {
+  return toAbsoluteUrl(req, `/api/v1/admin/homework/download/${contentId}?mode=download`);
 }
 
 export async function createTeacherContentController(req, res) {
@@ -142,6 +151,103 @@ export async function downloadContentController(req, res) {
     return res.status(500).json({
       success: false,
       message: error.message || "Download failed",
+    });
+  }
+}
+
+export async function getAdminHomeworkController(req, res) {
+  try {
+    const result = await getAdminHomeworkList(req.query);
+    const mappedData = (result.data || []).map((item) => {
+      if (!item.file?.url) return item;
+      return {
+        ...item,
+        file: {
+          ...item.file,
+          url: toAbsoluteUrl(req, item.file.url),
+          openUrl: toAbsoluteUrl(req, item.file.url),
+          downloadUrl: buildAdminHomeworkDownloadUrl(req, item.id),
+        },
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      ...result,
+      data: mappedData,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Failed to fetch homework",
+    });
+  }
+}
+
+export async function updateAdminHomeworkController(req, res) {
+  try {
+    const data = await updateHomeworkByAdmin(req.params.id, req.body);
+    return res.status(200).json({
+      success: true,
+      message: "Homework updated successfully",
+      data,
+    });
+  } catch (error) {
+    const status = /not found/i.test(error.message || "") ? 404 : 400;
+    return res.status(status).json({
+      success: false,
+      message: error.message || "Failed to update homework",
+    });
+  }
+}
+
+export async function deleteAdminHomeworkController(req, res) {
+  try {
+    const data = await deleteHomeworkByAdmin(req.params.id);
+    return res.status(200).json({
+      success: true,
+      message: "Homework deleted successfully",
+      data,
+    });
+  } catch (error) {
+    const status = /not found/i.test(error.message || "") ? 404 : 400;
+    return res.status(status).json({
+      success: false,
+      message: error.message || "Failed to delete homework",
+    });
+  }
+}
+
+export async function updateTeacherHomeworkController(req, res) {
+  try {
+    const data = await updateHomeworkByTeacher(req.user?._id, req.params.id, req.body);
+    return res.status(200).json({
+      success: true,
+      message: "Homework updated successfully",
+      data,
+    });
+  } catch (error) {
+    const status = /not found/i.test(error.message || "") ? 404 : 400;
+    return res.status(status).json({
+      success: false,
+      message: error.message || "Failed to update homework",
+    });
+  }
+}
+
+export async function deleteTeacherHomeworkController(req, res) {
+  try {
+    const data = await deleteHomeworkByTeacher(req.user?._id, req.params.id);
+    return res.status(200).json({
+      success: true,
+      message: "Homework deleted successfully",
+      data,
+    });
+  } catch (error) {
+    const status = /not found/i.test(error.message || "") ? 404 : 400;
+    return res.status(status).json({
+      success: false,
+      message: error.message || "Failed to delete homework",
     });
   }
 }

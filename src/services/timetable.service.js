@@ -143,8 +143,8 @@ async function notifyClassStudents({ classId, title, action = "uploaded" }) {
   if (!tokens.length) return;
 
   await sendPushNotificationToTokens(tokens, {
-    title: "Timetable Updated",
-    body: `${str(title) || "Class timetable"} was ${action}.`,
+    title: "Exam Timetable Updated",
+    body: `${str(title) || "Exam timetable"} was ${action}.`,
     data: {
       type: "timetable_published",
       targetTab: "timetable",

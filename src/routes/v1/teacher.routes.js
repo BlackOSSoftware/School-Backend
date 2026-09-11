@@ -14,8 +14,10 @@ import {
 
 import {
   createTeacherContentController,
+  deleteTeacherHomeworkController,
   downloadContentController,
   getTeacherContentController,
+  updateTeacherHomeworkController,
 } from "../../controllers/content.controller.js";
 
 import { adminMiddleware } from "../../middlewares/admin.middleware.js";
@@ -75,6 +77,18 @@ router.get(
   "/me/content/download/:id",
   teacherMiddleware,
   downloadContentController
+);
+
+router.patch(
+  "/me/homework/:id",
+  teacherMiddleware,
+  updateTeacherHomeworkController
+);
+
+router.delete(
+  "/me/homework/:id",
+  teacherMiddleware,
+  deleteTeacherHomeworkController
 );
 
 export default router;

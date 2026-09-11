@@ -339,3 +339,147 @@ export async function getStudentContentList(studentId, query = {}) {
     hasPrevPage: page > 1,
   };
 }
+
+function escapeRegex(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function resolveHomeworkSearchFilter(search = "") {
+  const term = normalizeString(search);
+  if (!term) return {};
+
+  const regex = new RegExp(escapeRegex(term), "i");
+  const [matchedClasses, matchedTeachers] = await Promise.all([
+    ClassModel.find({
+      $or: [{ name: regex }, { section: regex }],
+    })
+      .select("_id")
+      .lean(),
+    Teacher.find({ name: regex }).select("_id").lean(),
+  ]);
+
+  const or = [{ title: regex }, { subject: regex }, { description: regex }];
+  if (matchedClasses.length) {
+    or.push({ classId: { $in: matchedClasses.map((item) => item._id) } });
+  }
+  if (matchedTeachers.length) {
+    or.push({ createdBy: { $in: matchedTeachers.map((item) => item._id) } });
+  }
+  return { $or: or };
+}
+
+async function hydrateContentById(id) {
+  return Content.findById(id)
+    .populate("classId", "name section")
+    .populate("sessionId", "name startDate endDate isActive")
+    .populate("createdBy", "name email")
+    .lean();
+}
+
+async function deleteStoredContentFile(file = {}) {
+  const storagePath = normalizeString(file?.storagePath);
+  if (!storagePath) return;
+  try {
+    await fs.unlink(path.resolve(process.cwd(), storagePath));
+  } catch {
+    // Best-effort cleanup if file already missing.
+  }
+}
+
+export async function getAdminHomeworkList(query = {}) {
+  await backfillMissingContentSessions();
+
+  const { page, limit, skip } = buildPagination(query);
+  const filter = {
+    type: "homework",
+    ...(await resolveHomeworkSearchFilter(query.search)),
+  };
+
+  const [rows, total] = await Promise.all([
+    Content.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate("classId", "name section")
+      .populate("sessionId", "name startDate endDate isActive")
+      .populate("createdBy", "name email")
+      .lean(),
+    Content.countDocuments(filter),
+  ]);
+
+  const totalPages = Math.max(1, Math.ceil(total / limit) || 1);
+  return {
+    data: rows.map(toContentResponse),
+    total,
+    page,
+    limit,
+    totalPages,
+    hasNextPage: page < totalPages,
+    hasPrevPage: page > 1,
+  };
+}
+
+async function updateHomeworkFields(contentId, payload = {}, ownership = null) {
+  if (!mongoose.Types.ObjectId.isValid(contentId)) {
+    throw new Error("Invalid homework ID");
+  }
+
+  const row = await Content.findById(contentId);
+  if (!row || row.type !== "homework") {
+    throw new Error("Homework not found");
+  }
+  if (ownership?.teacherId && String(row.createdBy) !== String(ownership.teacherId)) {
+    throw new Error("You can only edit your own homework");
+  }
+
+  const title = normalizeString(payload.title);
+  const subject = normalizeSubject(payload.subject);
+  const description = normalizeString(payload.description);
+
+  if (!title) throw new Error("Title is required");
+  if (!subject) throw new Error("Subject is required");
+  if (!description) throw new Error("Description is required");
+
+  row.title = title;
+  row.subject = subject;
+  row.description = description;
+  await row.save();
+
+  const hydrated = await hydrateContentById(row._id);
+  return toContentResponse(hydrated);
+}
+
+async function deleteHomeworkById(contentId, ownership = null) {
+  if (!mongoose.Types.ObjectId.isValid(contentId)) {
+    throw new Error("Invalid homework ID");
+  }
+
+  const row = await Content.findById(contentId);
+  if (!row || row.type !== "homework") {
+    throw new Error("Homework not found");
+  }
+  if (ownership?.teacherId && String(row.createdBy) !== String(ownership.teacherId)) {
+    throw new Error("You can only delete your own homework");
+  }
+
+  const fileMeta = row.file ? { ...(row.file.toObject?.() ?? row.file) } : null;
+  await row.deleteOne();
+  await deleteStoredContentFile(fileMeta);
+  return { id: String(contentId) };
+}
+
+export async function updateHomeworkByAdmin(contentId, payload = {}) {
+  return updateHomeworkFields(contentId, payload);
+}
+
+export async function deleteHomeworkByAdmin(contentId) {
+  return deleteHomeworkById(contentId);
+}
+
+export async function updateHomeworkByTeacher(teacherId, contentId, payload = {}) {
+  return updateHomeworkFields(contentId, payload, { teacherId });
+}
+
+export async function deleteHomeworkByTeacher(teacherId, contentId) {
+  return deleteHomeworkById(contentId, { teacherId });
+}
