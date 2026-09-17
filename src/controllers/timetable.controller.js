@@ -56,7 +56,15 @@ export async function getTeacherTimetablesController(req, res) {
 export async function createAdminTimetableController(req, res) {
   try {
     const data = await createAdminTimetable(req.user?._id, req.body, req.file);
-    return res.status(201).json({ success: true, message: "Timetable uploaded successfully", data });
+    const count = Array.isArray(data) ? data.length : 1;
+    return res.status(201).json({
+      success: true,
+      message:
+        count > 1
+          ? `Exam timetable uploaded for ${count} classes`
+          : "Timetable uploaded successfully",
+      data,
+    });
   } catch (error) {
     return fail(res, error, "Unable to upload timetable");
   }

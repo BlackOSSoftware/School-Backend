@@ -153,6 +153,57 @@ async function notifyClassStudents({ classId, title, action = "uploaded" }) {
   });
 }
 
+async function cloneUploadedFile(file, index = 0) {
+  if (!file?.path) return null;
+  if (index === 0) return file;
+
+  const ext = path.extname(file.path) || path.extname(file.originalname || "") || "";
+  const dest = path.join(
+    path.dirname(file.path),
+    `${path.basename(file.path, path.extname(file.path))}-c${index}-${Date.now()}${ext}`
+  );
+  await fs.copyFile(file.path, dest);
+  return {
+    ...file,
+    path: dest,
+    filename: path.basename(dest),
+  };
+}
+
+function parseClassIds(payload = {}) {
+  const ids = [];
+  const pushId = (value) => {
+    const id = str(value);
+    if (id && mongoose.Types.ObjectId.isValid(id) && !ids.includes(id)) {
+      ids.push(id);
+    }
+  };
+
+  pushId(payload.classId);
+
+  if (Array.isArray(payload.classIds)) {
+    payload.classIds.forEach(pushId);
+  } else if (typeof payload.classIds === "string" && str(payload.classIds)) {
+    const raw = str(payload.classIds);
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach(pushId);
+      } else {
+        pushId(parsed);
+      }
+    } catch {
+      raw
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .forEach(pushId);
+    }
+  }
+
+  return ids;
+}
+
 async function loadTimetable(id) {
   return Timetable.findById(id)
     .populate("classId", "name section")
@@ -281,31 +332,63 @@ export async function getTeacherTimetables(teacherId, query = {}) {
 }
 
 export async function createAdminTimetable(adminId, payload = {}, file) {
-  const classId = entityId(payload.classId, "class ID");
-  await assertClassExists(classId);
+  const classIds = parseClassIds(payload);
+  if (!classIds.length) {
+    await deleteUploadedTemp(file);
+    throw new Error("Select at least one class");
+  }
+
   const title = str(payload.title);
   if (!title) {
     await deleteUploadedTemp(file);
     throw new Error("Title is required");
   }
 
+  const createdFiles = [];
   try {
     const sessionId = await resolveSessionId(payload.sessionId);
-    const row = await Timetable.create({
-      title,
-      description: str(payload.description),
-      classId,
-      sessionId,
-      file: buildFilePayload(file),
-      createdByAdminId: adminId,
-      updatedByAdminId: adminId,
-    });
+    for (const classId of classIds) {
+      await assertClassExists(classId);
+    }
 
-    const saved = await loadTimetable(row._id);
-    await notifyClassStudents({ classId, title, action: "uploaded" });
-    return formatTimetable(saved);
+    const rows = [];
+    for (let index = 0; index < classIds.length; index += 1) {
+      const classId = classIds[index];
+      const fileForClass = file?.path ? await cloneUploadedFile(file, index) : null;
+      if (fileForClass?.path && index > 0) {
+        createdFiles.push(fileForClass.path);
+      }
+
+      const row = await Timetable.create({
+        title,
+        description: str(payload.description),
+        classId,
+        sessionId,
+        file: buildFilePayload(fileForClass),
+        createdByAdminId: adminId,
+        updatedByAdminId: adminId,
+      });
+      rows.push(row);
+    }
+
+    const saved = await Promise.all(rows.map((row) => loadTimetable(row._id)));
+    await Promise.all(
+      classIds.map((classId) => notifyClassStudents({ classId, title, action: "uploaded" }))
+    );
+
+    const formatted = saved.map(formatTimetable);
+    return formatted.length === 1 ? formatted[0] : formatted;
   } catch (error) {
     await deleteUploadedTemp(file);
+    await Promise.all(
+      createdFiles.map(async (filePath) => {
+        try {
+          await fs.unlink(filePath);
+        } catch {
+          // best effort
+        }
+      })
+    );
     throw error;
   }
 }
