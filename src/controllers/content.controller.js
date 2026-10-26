@@ -5,11 +5,13 @@ import {
   createContentByTeacher,
   deleteHomeworkByAdmin,
   deleteHomeworkByTeacher,
+  deleteNotesByTeacher,
   getAdminHomeworkList,
   getStudentContentList,
   getTeacherContentList,
   updateHomeworkByAdmin,
   updateHomeworkByTeacher,
+  updateNotesByTeacher,
 } from "../services/content.service.js";
 
 function pickTypeFromRequest(req) {
@@ -248,6 +250,40 @@ export async function deleteTeacherHomeworkController(req, res) {
     return res.status(status).json({
       success: false,
       message: error.message || "Failed to delete homework",
+    });
+  }
+}
+
+export async function updateTeacherNotesController(req, res) {
+  try {
+    const data = await updateNotesByTeacher(req.user?._id, req.params.id, req.body);
+    return res.status(200).json({
+      success: true,
+      message: "Notes updated successfully",
+      data,
+    });
+  } catch (error) {
+    const status = /not found/i.test(error.message || "") ? 404 : 400;
+    return res.status(status).json({
+      success: false,
+      message: error.message || "Failed to update notes",
+    });
+  }
+}
+
+export async function deleteTeacherNotesController(req, res) {
+  try {
+    const data = await deleteNotesByTeacher(req.user?._id, req.params.id);
+    return res.status(200).json({
+      success: true,
+      message: "Notes deleted successfully",
+      data,
+    });
+  } catch (error) {
+    const status = /not found/i.test(error.message || "") ? 404 : 400;
+    return res.status(status).json({
+      success: false,
+      message: error.message || "Failed to delete notes",
     });
   }
 }

@@ -419,17 +419,22 @@ export async function getAdminHomeworkList(query = {}) {
   };
 }
 
-async function updateHomeworkFields(contentId, payload = {}, ownership = null) {
+function contentTypeLabel(type = "homework") {
+  return type === "notes" ? "notes" : "homework";
+}
+
+async function updateContentFields(contentId, payload = {}, ownership = null, allowedTypes = ["homework"]) {
+  const allowed = new Set(allowedTypes);
   if (!mongoose.Types.ObjectId.isValid(contentId)) {
-    throw new Error("Invalid homework ID");
+    throw new Error(`Invalid ${contentTypeLabel(allowedTypes[0])} ID`);
   }
 
   const row = await Content.findById(contentId);
-  if (!row || row.type !== "homework") {
-    throw new Error("Homework not found");
+  if (!row || !allowed.has(row.type)) {
+    throw new Error(`${allowed.has("notes") && !allowed.has("homework") ? "Notes" : "Homework"} not found`);
   }
   if (ownership?.teacherId && String(row.createdBy) !== String(ownership.teacherId)) {
-    throw new Error("You can only edit your own homework");
+    throw new Error(`You can only edit your own ${contentTypeLabel(row.type)}`);
   }
 
   const title = normalizeString(payload.title);
@@ -449,17 +454,18 @@ async function updateHomeworkFields(contentId, payload = {}, ownership = null) {
   return toContentResponse(hydrated);
 }
 
-async function deleteHomeworkById(contentId, ownership = null) {
+async function deleteContentById(contentId, ownership = null, allowedTypes = ["homework"]) {
+  const allowed = new Set(allowedTypes);
   if (!mongoose.Types.ObjectId.isValid(contentId)) {
-    throw new Error("Invalid homework ID");
+    throw new Error(`Invalid ${contentTypeLabel(allowedTypes[0])} ID`);
   }
 
   const row = await Content.findById(contentId);
-  if (!row || row.type !== "homework") {
-    throw new Error("Homework not found");
+  if (!row || !allowed.has(row.type)) {
+    throw new Error(`${allowed.has("notes") && !allowed.has("homework") ? "Notes" : "Homework"} not found`);
   }
   if (ownership?.teacherId && String(row.createdBy) !== String(ownership.teacherId)) {
-    throw new Error("You can only delete your own homework");
+    throw new Error(`You can only delete your own ${contentTypeLabel(row.type)}`);
   }
 
   const fileMeta = row.file ? { ...(row.file.toObject?.() ?? row.file) } : null;
@@ -469,17 +475,25 @@ async function deleteHomeworkById(contentId, ownership = null) {
 }
 
 export async function updateHomeworkByAdmin(contentId, payload = {}) {
-  return updateHomeworkFields(contentId, payload);
+  return updateContentFields(contentId, payload, null, ["homework"]);
 }
 
 export async function deleteHomeworkByAdmin(contentId) {
-  return deleteHomeworkById(contentId);
+  return deleteContentById(contentId, null, ["homework"]);
 }
 
 export async function updateHomeworkByTeacher(teacherId, contentId, payload = {}) {
-  return updateHomeworkFields(contentId, payload, { teacherId });
+  return updateContentFields(contentId, payload, { teacherId }, ["homework"]);
 }
 
 export async function deleteHomeworkByTeacher(teacherId, contentId) {
-  return deleteHomeworkById(contentId, { teacherId });
+  return deleteContentById(contentId, { teacherId }, ["homework"]);
+}
+
+export async function updateNotesByTeacher(teacherId, contentId, payload = {}) {
+  return updateContentFields(contentId, payload, { teacherId }, ["notes"]);
+}
+
+export async function deleteNotesByTeacher(teacherId, contentId) {
+  return deleteContentById(contentId, { teacherId }, ["notes"]);
 }

@@ -15,9 +15,11 @@ import {
 import {
   createTeacherContentController,
   deleteTeacherHomeworkController,
+  deleteTeacherNotesController,
   downloadContentController,
   getTeacherContentController,
   updateTeacherHomeworkController,
+  updateTeacherNotesController,
 } from "../../controllers/content.controller.js";
 
 import { adminMiddleware } from "../../middlewares/admin.middleware.js";
@@ -89,6 +91,18 @@ router.delete(
   "/me/homework/:id",
   teacherMiddleware,
   deleteTeacherHomeworkController
+);
+
+router.patch(
+  "/me/notes/:id",
+  teacherMiddleware,
+  updateTeacherNotesController
+);
+
+router.delete(
+  "/me/notes/:id",
+  teacherMiddleware,
+  deleteTeacherNotesController
 );
 
 export default router;
