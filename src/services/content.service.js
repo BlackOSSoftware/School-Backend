@@ -423,7 +423,13 @@ function contentTypeLabel(type = "homework") {
   return type === "notes" ? "notes" : "homework";
 }
 
-async function updateContentFields(contentId, payload = {}, ownership = null, allowedTypes = ["homework"]) {
+async function updateContentFields(
+  contentId,
+  payload = {},
+  ownership = null,
+  allowedTypes = ["homework"],
+  file = null
+) {
   const allowed = new Set(allowedTypes);
   if (!mongoose.Types.ObjectId.isValid(contentId)) {
     throw new Error(`Invalid ${contentTypeLabel(allowedTypes[0])} ID`);
@@ -431,27 +437,65 @@ async function updateContentFields(contentId, payload = {}, ownership = null, al
 
   const row = await Content.findById(contentId);
   if (!row || !allowed.has(row.type)) {
+    await deleteUploadedFile(file);
     throw new Error(`${allowed.has("notes") && !allowed.has("homework") ? "Notes" : "Homework"} not found`);
   }
   if (ownership?.teacherId && String(row.createdBy) !== String(ownership.teacherId)) {
+    await deleteUploadedFile(file);
     throw new Error(`You can only edit your own ${contentTypeLabel(row.type)}`);
   }
 
   const title = normalizeString(payload.title);
   const subject = normalizeSubject(payload.subject);
   const description = normalizeString(payload.description);
+  const removeFile = ["true", "1", "yes"].includes(
+    normalizeString(payload.removeFile).toLowerCase()
+  );
 
-  if (!title) throw new Error("Title is required");
-  if (!subject) throw new Error("Subject is required");
-  if (!description) throw new Error("Description is required");
+  if (!title) {
+    await deleteUploadedFile(file);
+    throw new Error("Title is required");
+  }
+  if (!subject) {
+    await deleteUploadedFile(file);
+    throw new Error("Subject is required");
+  }
+  if (!description) {
+    await deleteUploadedFile(file);
+    throw new Error("Description is required");
+  }
 
-  row.title = title;
-  row.subject = subject;
-  row.description = description;
-  await row.save();
+  const oldFileMeta = row.file ? { ...(row.file.toObject?.() ?? row.file) } : null;
 
-  const hydrated = await hydrateContentById(row._id);
-  return toContentResponse(hydrated);
+  try {
+    row.title = title;
+    row.subject = subject;
+    row.description = description;
+
+    if (file?.path) {
+      row.file = {
+        originalName: file.originalname,
+        mimeType: resolveMimeType(file),
+        size: file.size,
+        storagePath: pathRelativeToUploads(file.path),
+      };
+    } else if (removeFile) {
+      row.set("file", undefined);
+      row.file = undefined;
+    }
+
+    await row.save();
+
+    if ((file?.path || removeFile) && oldFileMeta?.storagePath) {
+      await deleteStoredContentFile(oldFileMeta);
+    }
+
+    const hydrated = await hydrateContentById(row._id);
+    return toContentResponse(hydrated);
+  } catch (error) {
+    await deleteUploadedFile(file);
+    throw error;
+  }
 }
 
 async function deleteContentById(contentId, ownership = null, allowedTypes = ["homework"]) {
@@ -474,24 +518,24 @@ async function deleteContentById(contentId, ownership = null, allowedTypes = ["h
   return { id: String(contentId) };
 }
 
-export async function updateHomeworkByAdmin(contentId, payload = {}) {
-  return updateContentFields(contentId, payload, null, ["homework"]);
+export async function updateHomeworkByAdmin(contentId, payload = {}, file = null) {
+  return updateContentFields(contentId, payload, null, ["homework"], file);
 }
 
 export async function deleteHomeworkByAdmin(contentId) {
   return deleteContentById(contentId, null, ["homework"]);
 }
 
-export async function updateHomeworkByTeacher(teacherId, contentId, payload = {}) {
-  return updateContentFields(contentId, payload, { teacherId }, ["homework"]);
+export async function updateHomeworkByTeacher(teacherId, contentId, payload = {}, file = null) {
+  return updateContentFields(contentId, payload, { teacherId }, ["homework"], file);
 }
 
 export async function deleteHomeworkByTeacher(teacherId, contentId) {
   return deleteContentById(contentId, { teacherId }, ["homework"]);
 }
 
-export async function updateNotesByTeacher(teacherId, contentId, payload = {}) {
-  return updateContentFields(contentId, payload, { teacherId }, ["notes"]);
+export async function updateNotesByTeacher(teacherId, contentId, payload = {}, file = null) {
+  return updateContentFields(contentId, payload, { teacherId }, ["notes"], file);
 }
 
 export async function deleteNotesByTeacher(teacherId, contentId) {

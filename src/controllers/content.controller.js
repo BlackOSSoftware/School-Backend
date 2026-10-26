@@ -222,7 +222,7 @@ export async function deleteAdminHomeworkController(req, res) {
 
 export async function updateTeacherHomeworkController(req, res) {
   try {
-    const data = await updateHomeworkByTeacher(req.user?._id, req.params.id, req.body);
+    const data = await updateHomeworkByTeacher(req.user?._id, req.params.id, req.body, req.file);
     return res.status(200).json({
       success: true,
       message: "Homework updated successfully",
@@ -256,7 +256,7 @@ export async function deleteTeacherHomeworkController(req, res) {
 
 export async function updateTeacherNotesController(req, res) {
   try {
-    const data = await updateNotesByTeacher(req.user?._id, req.params.id, req.body);
+    const data = await updateNotesByTeacher(req.user?._id, req.params.id, req.body, req.file);
     return res.status(200).json({
       success: true,
       message: "Notes updated successfully",

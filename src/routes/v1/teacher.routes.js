@@ -84,6 +84,8 @@ router.get(
 router.patch(
   "/me/homework/:id",
   teacherMiddleware,
+  uploadSingleFile,
+  uploadErrorHandler,
   updateTeacherHomeworkController
 );
 
@@ -96,6 +98,8 @@ router.delete(
 router.patch(
   "/me/notes/:id",
   teacherMiddleware,
+  uploadSingleFile,
+  uploadErrorHandler,
   updateTeacherNotesController
 );
 
